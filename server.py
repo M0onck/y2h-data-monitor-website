@@ -105,6 +105,7 @@ class EdgeSnapshotData(BaseModel):
     status: str
     session_id: Optional[str] = None
     timestamp: float
+    ground_temp: Any
     veh_count: int
     ldv_count: int
     hdv_count: int
@@ -155,6 +156,7 @@ def init_db():
             status TEXT,
             session_id TEXT,
             timestamp REAL,
+            ground_temp TEXT,
             veh_count INTEGER,
             ldv_count INTEGER,
             hdv_count INTEGER,
@@ -226,19 +228,43 @@ def get_devices(auth: bool = Depends(check_login)):
     now = datetime.now()
     now_ts = now.timestamp() # 获取浮点时间戳用于和边缘端比较
     
-    # === 1. 移动设备 (保持你的原样) ===
-    c.execute('SELECT device_id, MAX(timestamp) as last_seen, COUNT(id) as total_points FROM mobile_data WHERE device_id IS NOT NULL GROUP BY device_id ORDER BY last_seen DESC')
+    # === 1. 移动设备 ===
+    c.execute('''
+        SELECT 
+            device_id, 
+            MAX(timestamp) as last_seen, 
+            COUNT(id) as total_points,
+            MAX(CASE WHEN latitude IS NOT NULL AND ABS(latitude - 32.060255) > 0.00001 THEN timestamp ELSE NULL END) as last_valid_gps_time
+        FROM mobile_data 
+        WHERE device_id IS NOT NULL 
+        GROUP BY device_id 
+        ORDER BY last_seen DESC
+    ''')
+    
     for r in c.fetchall():
-        dt = datetime.strptime(r["last_seen"], "%Y-%m-%d %H:%M:%S") if r["last_seen"] else datetime.min
+        dt_seen = datetime.strptime(r["last_seen"], "%Y-%m-%d %H:%M:%S") if r["last_seen"] else datetime.min
+        dt_gps = datetime.strptime(r["last_valid_gps_time"], "%Y-%m-%d %H:%M:%S") if r["last_valid_gps_time"] else datetime.min
+        
+        sec_since_seen = (now - dt_seen).total_seconds()
+        sec_since_gps = (now - dt_gps).total_seconds()
+        
+        # 5分钟无心跳则离线；30秒无有效GPS则定位中；否则在线。
+        if sec_since_seen > 300:
+            status = "offline"
+        elif sec_since_gps > 30:
+            status = "locating"
+        else:
+            status = "online"
+            
         devices.append({
             "id": r["device_id"], 
             "type": "mobile", 
             "last_seen": r["last_seen"], 
             "total_points": r["total_points"], 
-            "status": "online" if (now - dt).total_seconds() <= 120 else "offline"
+            "status": status
         })
         
-    # === 2. [新增] 查阅边缘快照心跳 (加入防崩保护) ===
+    # === 2. 查阅边缘快照心跳 (加入防崩保护) ===
     edge_last_seen_map = {}
     try:
         # edge_snapshots 表里的 timestamp 存的是 float 
@@ -317,7 +343,7 @@ def get_map_data(date: str = "", start: str = "", end: str = "", device_id: str 
         # 2. 甄别占位符飞线
         is_invalid_pos = False
         if device_type == "mobile":
-            # 【核心修复】：去掉了对 fix_quality == 0 的严格拦截，防止新设备被误杀
+            # 去掉了对 fix_quality == 0 的严格拦截，防止新设备被误杀
             # 只拦截特定的默认占位坐标 (32.060255, 118.796877)
             if abs(lat - 32.060255) < 0.00001 and abs(lon - 118.796877) < 0.00001:
                 is_invalid_pos = True
@@ -330,24 +356,26 @@ def get_map_data(date: str = "", start: str = "", end: str = "", device_id: str 
             final_lon = lon
         else:
             if last_valid_lat is not None and last_valid_lon is not None:
-                # 信号丢失，回退到历史最后一次真实坐标
+                # 运行中信号短暂丢失，回退到历史最后一次真实坐标
                 final_lat = last_valid_lat
                 final_lon = last_valid_lon
             else:
-                # 【核心修复】：如果开机就是占位符坐标（尚无历史坐标），
-                # 依然放行！确保虽然地图在占位符，但环境数据能传给左下角看板！
-                final_lat = lat
-                final_lon = lon
+                # 设备刚开机处于“定位中”，完全剥离默认坐标
+                final_lat = None
+                final_lon = None
                 
         if row_dict.get("timestamp"): 
             dates_set.add(row_dict["timestamp"].split(" ")[0])
             
-        bd_lon, bd_lat = wgs84_to_bd09(final_lon, final_lat)
+        # 4. 只有真实坐标才进行转换，否则保持为 None
+        bd_lon, bd_lat = None, None
+        if final_lat is not None and final_lon is not None:
+            bd_lon, bd_lat = wgs84_to_bd09(final_lon, final_lat)
         
         pt = {
             "time": row_dict.get("timestamp"), 
-            "lng": round(bd_lon, 7), 
-            "lat": round(bd_lat, 7),
+            "lng": round(bd_lon, 7) if bd_lon is not None else None, 
+            "lat": round(bd_lat, 7) if bd_lat is not None else None,
             "pm25": row_dict.get("pm25"), 
             "pm10": row_dict.get("pm10"), 
             "temp": row_dict.get("temp"), 
@@ -401,10 +429,10 @@ def upload_edge_snapshot(data: EdgeSnapshotData):
     
     # 将可能包含 "--" 占位符的混合类型强制转为字符串存入 SQLite
     c.execute('''INSERT INTO edge_snapshots 
-                 (device_id, status, session_id, timestamp, veh_count, ldv_count, hdv_count, 
+                 (device_id, status, session_id, timestamp, ground_temp, veh_count, ldv_count, hdv_count, 
                   temp, humidity, wind_speed, wind_dir, pm25, pm10)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
-              (data.device_id, data.status, data.session_id, data.timestamp, 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
+              (data.device_id, data.status, data.session_id, data.timestamp, str(data.ground_temp),
                data.veh_count, data.ldv_count, data.hdv_count, 
                str(data.temp), str(data.humidity), str(data.wind_speed), 
                str(data.wind_dir), str(data.pm25), str(data.pm10)))

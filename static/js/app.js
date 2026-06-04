@@ -178,17 +178,24 @@ async function fetchDevices(autoSelect = false) {
         let statHtml = '';
         
         data.devices.forEach(d => {
-            let statusClass = d.status === 'online' ? 'online' : 'offline';
-            let statusText = d.status === 'online' ? '在线' : '离线';
+            // 【核心修改 1】：引入状态机映射，新增定位中 (locating) 的黄色样式
+            let statusObj = {
+                'online': { text: '在线', dotBg: '#10b981', badgeBg: '#10b981' }, // 绿灯
+                'locating': { text: '定位中', dotBg: '#f59e0b', badgeBg: '#f59e0b' }, // 黄灯
+                'offline': { text: '离线', dotBg: '#64748b', badgeBg: '#334155' } // 灰灯
+            }[d.status] || { text: '未知', dotBg: '#64748b', badgeBg: '#334155' };
+
             let activeClass = (d.id === currentDeviceId) ? 'active-device' : '';
+            
+            // 注意这里去掉了 statusClass，直接使用 style 内联渲染颜色，防止没有对应 css 类
             let item = `
             <div class="device-item ${activeClass}" data-id="${d.id}" onclick="selectDevice('${d.id}', '${d.type}')">
                 <div>
-                    <div class="d-name"><span class="status-dot ${statusClass}"></span>${d.id}</div>
+                    <div class="d-name"><span class="status-dot" style="background-color: ${statusObj.dotBg}"></span>${d.id}</div>
                     <div class="d-time">最后通讯: ${d.last_seen}</div>
                 </div>
                 <div style="text-align:right;">
-                    <div class="badge" style="background:#334155; color:#f8fafc; border:0; margin-bottom:4px">${statusText}</div><br>
+                    <div class="badge" style="background:${statusObj.badgeBg}; color:white; border:0; margin-bottom:4px">${statusObj.text}</div><br>
                     <span style="font-size:11px; color:#94a3b8">${d.total_points} pts</span>
                 </div>
             </div>`;
@@ -200,7 +207,9 @@ async function fetchDevices(autoSelect = false) {
         document.getElementById('mobileDeviceList').innerHTML = mobileHtml || '<div class="small">暂无设备</div>';
         document.getElementById('stationaryDeviceList').innerHTML = statHtml || '<div class="small">暂无固定站设备</div>';
         
-    } catch(e) {}
+    } catch(e) {
+        console.error("加载设备列表失败", e);
+    }
 }
 
 async function loadData(fit = true) {
@@ -225,9 +234,15 @@ async function loadData(fit = true) {
                 s.max = Math.max(0, points.length - 1);
                 if (autoRefresh || fit) s.value = Math.max(0, points.length - 1);
                 s.disabled = false;
-                document.getElementById('mobileSummary').innerHTML = `<span class="badge">有效定位: ${data.returned_count} 点</span><span class="badge" style="background:#10b981;color:white">云端接收中</span>`;
+                document.getElementById('mobileSummary').innerHTML = `<span class="badge">已接收: ${data.returned_count} 点</span><span class="badge" style="background:#10b981;color:white">云端接收中</span>`;
+                
                 drawUntilSlider();
-                if (fit && points.length > 1) map.setViewport(points.map(pt));
+                
+                // 【核心修改 4】：过滤出有效点后，再执行地图视角自适应 (setViewport)
+                let validPointsForView = points.filter(p => p.lng !== null && p.lat !== null);
+                if (fit && validPointsForView.length > 1) {
+                    map.setViewport(validPointsForView.map(pt));
+                }
             } else {
                 s.max = 0; s.value = 0; s.disabled = true;
                 clearOverlays();
@@ -315,27 +330,39 @@ function currentSub() {
 function drawTrack(sub) {
     clearOverlays();
     setActive('track');
-    if (sub.length < 1) return;
     
-    let l = new BMap.Polyline(sub.map(pt), {strokeColor: '#3b82f6', strokeWeight: 4, strokeOpacity: 0.9});
+    // 【核心修改 2】：提取出所有具备真实坐标的点，只用它们来画线
+    let validData = sub.filter(p => p.lng !== null && p.lat !== null);
+    
+    if (validData.length < 1) return;
+    
+    let l = new BMap.Polyline(validData.map(pt), {strokeColor: '#3b82f6', strokeWeight: 4, strokeOpacity: 0.9});
     map.addOverlay(l);
     overlays.push(l);
     
-    let endMarker = new BMap.Marker(pt(sub[sub.length - 1]));
+    // 终点 marker 必须锚定在最后一个【有效】的坐标点上
+    let lastValidPt = validData[validData.length - 1];
+    let endMarker = new BMap.Marker(pt(lastValidPt));
     map.addOverlay(endMarker);
     overlays.push(endMarker);
+    
     endMarker.addEventListener('click', () => {
-        map.openInfoWindow(new BMap.InfoWindow(popupMobile(sub[sub.length - 1])), pt(sub[sub.length - 1]));
+        map.openInfoWindow(new BMap.InfoWindow(popupMobile(lastValidPt)), pt(lastValidPt));
     });
 }
 
 function drawValueLayer(sub, field) {
     clearOverlays();
     setActive(field);
-    let vals = sub.map(d => d[field]).filter(v => v !== null && !isNaN(v));
-    if (!vals.length) return drawTrack(sub);
     
-    for (let d of sub) {
+    // 【核心修改 3】：同样过滤掉没有 GPS 坐标的点
+    let validData = sub.filter(p => p.lng !== null && p.lat !== null);
+    if (validData.length < 1) return;
+
+    let vals = validData.map(d => d[field]).filter(v => v !== null && !isNaN(v));
+    if (!vals.length) return drawTrack(validData);
+    
+    for (let d of validData) {
         if (d[field] === null || isNaN(d[field])) continue;
         let c = colorRamp(normalize(vals, d[field]));
         let circle = new BMap.Circle(pt(d), 3.5, {strokeColor: c, strokeWeight: 1, strokeOpacity: 0.8, fillColor: c, fillOpacity: 0.8});
@@ -422,7 +449,7 @@ async function fetchAndRenderEdgeSnapshot(deviceId) {
             // 2. 带有 Data Hold 逻辑的渲染过程
             // 映射关系：后端JSON的键名 -> 前端DOM的ID
             const fieldsMap = {
-                'veh_count': 'stat-veh_count', 'ldv_count': 'stat-ldv_count', 'hdv_count': 'stat-hdv_count',
+                'ground_temp': 'stat-ground_temp', 'ldv_count': 'stat-ldv_count', 'hdv_count': 'stat-hdv_count',
                 'pm25': 'stat-pm25', 'pm10': 'stat-pm10', 'temp': 'stat-temp',
                 'humidity': 'stat-rh', // 注意后端的 humidity 对应前端的 stat-rh
                 'wind_speed': 'stat-wind_speed', 'wind_dir': 'stat-wind_dir'
