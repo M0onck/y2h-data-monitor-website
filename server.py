@@ -99,6 +99,9 @@ class SensorUploadData(BaseModel):
     satellites: Optional[int] = None     
     fix_quality: Optional[int] = None    
     device_id: str
+    gps_state: str = "locating"
+    hdop: float = 99.9
+    snr: float = 0.0
 
 class EdgeSnapshotData(BaseModel):
     device_id: str
@@ -126,12 +129,26 @@ def init_db():
     c = conn.cursor()
     c.execute('''
         CREATE TABLE IF NOT EXISTS mobile_data (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT,
-            pm25 REAL, pm10 REAL, latitude REAL, longitude REAL,
-            speed REAL, temp REAL, rh REAL, voc REAL, co2 REAL,
-            satellites INTEGER DEFAULT 0, fix_quality INTEGER DEFAULT 0, device_id TEXT
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp DATETIME,
+            pm25 REAL,
+            pm10 REAL,
+            latitude REAL,
+            longitude REAL,
+            speed REAL,
+            temp REAL,
+            rh REAL,
+            voc REAL,
+            co2 REAL,
+            satellites INTEGER,
+            fix_quality INTEGER,
+            gps_state TEXT,
+            hdop REAL,
+            snr REAL,
+            device_id TEXT
         )
     ''')
+
     c.execute('''
         CREATE TABLE IF NOT EXISTS stationary_data (
             id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT,
@@ -231,27 +248,24 @@ def get_devices(auth: bool = Depends(check_login)):
     # === 1. 移动设备 ===
     c.execute('''
         SELECT 
-            device_id, 
-            MAX(timestamp) as last_seen, 
-            COUNT(id) as total_points,
-            MAX(CASE WHEN latitude IS NOT NULL AND ABS(latitude - 32.060255) > 0.00001 THEN timestamp ELSE NULL END) as last_valid_gps_time
-        FROM mobile_data 
-        WHERE device_id IS NOT NULL 
-        GROUP BY device_id 
+            m1.device_id, 
+            MAX(m1.timestamp) as last_seen, 
+            COUNT(m1.id) as total_points,
+            (SELECT gps_state FROM mobile_data m2 WHERE m2.device_id = m1.device_id ORDER BY timestamp DESC LIMIT 1) as latest_gps_state
+        FROM mobile_data m1
+        WHERE m1.device_id IS NOT NULL 
+        GROUP BY m1.device_id 
         ORDER BY last_seen DESC
     ''')
     
     for r in c.fetchall():
         dt_seen = datetime.strptime(r["last_seen"], "%Y-%m-%d %H:%M:%S") if r["last_seen"] else datetime.min
-        dt_gps = datetime.strptime(r["last_valid_gps_time"], "%Y-%m-%d %H:%M:%S") if r["last_valid_gps_time"] else datetime.min
-        
         sec_since_seen = (now - dt_seen).total_seconds()
-        sec_since_gps = (now - dt_gps).total_seconds()
         
-        # 5分钟无心跳则离线；30秒无有效GPS则定位中；否则在线。
+        # 5分钟不发数据就是离线
         if sec_since_seen > 300:
             status = "offline"
-        elif sec_since_gps > 30:
+        elif r["latest_gps_state"] == "locating":
             status = "locating"
         else:
             status = "online"
@@ -388,7 +402,9 @@ def get_map_data(date: str = "", start: str = "", end: str = "", device_id: str 
                 "co2": row_dict.get("co2"), 
                 "speed": row_dict.get("speed"), 
                 "satellites": row_dict.get("satellites", 0), 
-                "fix_quality": row_dict.get("fix_quality", 0)
+                "fix_quality": row_dict.get("fix_quality", 0),
+                "hdop": row_dict.get("hdop", 99.9),
+                "snr": row_dict.get("snr", 0.0)
             })
         else:
             pt.update({
@@ -414,9 +430,10 @@ def update_station_location(data: StationLocationUpdate, auth: bool = Depends(ch
 def upload_data(data: SensorUploadData):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute('''INSERT INTO mobile_data (timestamp, pm25, pm10, latitude, longitude, speed, temp, rh, voc, co2, satellites, fix_quality, device_id)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
-              (data.timestamp, data.pm25, data.pm10, data.latitude, data.longitude, data.speed, data.temp, data.rh, data.voc, data.co2, data.satellites, data.fix_quality, data.device_id))
+    c.execute('''INSERT INTO mobile_data 
+                 (timestamp, pm25, pm10, latitude, longitude, speed, temp, rh, voc, co2, satellites, fix_quality, gps_state, hdop, snr, device_id)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
+              (data.timestamp, data.pm25, data.pm10, data.latitude, data.longitude, data.speed, data.temp, data.rh, data.voc, data.co2, data.satellites, data.fix_quality, data.gps_state, data.hdop, data.snr, data.device_id))
     conn.commit()
     conn.close()
     return {"status": "success"}
