@@ -404,7 +404,8 @@ def get_map_data(date: str = "", start: str = "", end: str = "", device_id: str 
                 "satellites": row_dict.get("satellites", 0), 
                 "fix_quality": row_dict.get("fix_quality", 0),
                 "hdop": row_dict.get("hdop", 99.9),
-                "snr": row_dict.get("snr", 0.0)
+                "snr": row_dict.get("snr", 0.0),
+                "gps_state": row_dict.get("gps_state", "locating")
             })
         else:
             pt.update({

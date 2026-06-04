@@ -234,11 +234,19 @@ async function loadData(fit = true) {
                 s.max = Math.max(0, points.length - 1);
                 if (autoRefresh || fit) s.value = Math.max(0, points.length - 1);
                 s.disabled = false;
-                document.getElementById('mobileSummary').innerHTML = `<span class="badge">已接收: ${data.returned_count} 点</span><span class="badge" style="background:#10b981;color:white">云端接收中</span>`;
+                
+                // 【核心新增】：通过最新一条数据的 gps_state 决定上方徽章的内容
+                let latestPoint = points[points.length - 1]; // 取出当前最新数据点
+                let isLocating = latestPoint.gps_state === 'locating';
+                
+                let statusBadgeHtml = isLocating ? 
+                    `<span class="badge" style="background:#f59e0b;color:white">🟡 定位中</span>` : 
+                    `<span class="badge" style="background:#10b981;color:white">🟢 已定位</span>`;
+                
+                document.getElementById('mobileSummary').innerHTML = `<span class="badge">已接收: ${data.returned_count} 点</span>${statusBadgeHtml}`;
                 
                 drawUntilSlider();
                 
-                // 【核心修改 4】：过滤出有效点后，再执行地图视角自适应 (setViewport)
                 let validPointsForView = points.filter(p => p.lng !== null && p.lat !== null);
                 if (fit && validPointsForView.length > 1) {
                     map.setViewport(validPointsForView.map(pt));
@@ -273,19 +281,21 @@ let mobileDataCache = {};
 
 function updateMobileDashboard(d) {
     if (!d) {
-        ['pm25','pm10','voc','co2','temp','rh','speed','sat','fix'].forEach(k => document.getElementById(`val-${k}`).innerText = '--');
+        ['pm25','pm10','voc','co2','temp','rh','speed','sat','snr'].forEach(k => {
+            let el = document.getElementById(`val-${k}`);
+            if (el) el.innerText = '--';
+        });
         return;
     }
     
-    // 辅助更新函数（自带 Data Hold 数据保持记忆功能）
     const updateField = (key, domId, suffix = '') => {
         let raw = d[key];
-        let newVal = val(raw); // 内部拦截函数，将 null/空字符串/NaN 都转为 '-'
+        let newVal = val(raw); 
         
         if (newVal === '-' && mobileDataCache[key] !== undefined && mobileDataCache[key] !== '-') {
-            newVal = mobileDataCache[key]; // 如果当前无效且有历史数据，触发数据保持
+            newVal = mobileDataCache[key]; 
         } else if (newVal !== '-') {
-            mobileDataCache[key] = newVal; // 如果传来有效数据，更新缓存
+            mobileDataCache[key] = newVal; 
         }
         
         let el = document.getElementById(domId);
@@ -298,22 +308,9 @@ function updateMobileDashboard(d) {
     updateField('co2', 'val-co2');
     updateField('temp', 'val-temp', '℃');
     updateField('rh', 'val-rh', '%');
-    updateField('speed', 'val-speed');
+    updateField('speed', 'val-speed', ' km/h');
     updateField('satellites', 'val-sat');
-
-    // 针对定位状态的特判处理
-    let fixRaw = d.fix_quality;
-    let fixText = '--';
-    if (fixRaw !== null && fixRaw !== undefined) {
-        if (fixRaw === 0) fixText = '搜索中';
-        else if (fixRaw === 1) fixText = '单点解';
-        else if (fixRaw === 2) fixText = '差分解';
-        mobileDataCache['fix'] = fixText;
-    } else if (mobileDataCache['fix']) {
-        fixText = mobileDataCache['fix'];
-    }
-    let fixEl = document.getElementById('val-fix');
-    if(fixEl) fixEl.innerText = fixText;
+    updateField('snr', 'val-snr', ' dB');
 }
 
 function updateStationDashboard(d) {
@@ -331,23 +328,37 @@ function drawTrack(sub) {
     clearOverlays();
     setActive('track');
     
-    // 【核心修改 2】：提取出所有具备真实坐标的点，只用它们来画线
     let validData = sub.filter(p => p.lng !== null && p.lat !== null);
-    
     if (validData.length < 1) return;
     
     let l = new BMap.Polyline(validData.map(pt), {strokeColor: '#3b82f6', strokeWeight: 4, strokeOpacity: 0.9});
     map.addOverlay(l);
     overlays.push(l);
     
-    // 终点 marker 必须锚定在最后一个【有效】的坐标点上
     let lastValidPt = validData[validData.length - 1];
-    let endMarker = new BMap.Marker(pt(lastValidPt));
+    let endPt = pt(lastValidPt);
+    let endMarker = new BMap.Marker(endPt);
     map.addOverlay(endMarker);
     overlays.push(endMarker);
     
+    // 基于 hdop 绘制定位精度圈
+    // 如果 hdop > 1.2 认为存在一定误差，绘制半透明圆 (1.2以内认为是完美精度，不画圈)
+    // 经验公式估算误差半径：HDOP * 5 (米)
+    if (lastValidPt.hdop && lastValidPt.hdop > 1.2) {
+        let radius = lastValidPt.hdop * 5; 
+        let circle = new BMap.Circle(endPt, radius, {
+            strokeColor: "#3b82f6", 
+            strokeWeight: 1, 
+            strokeOpacity: 0.3, 
+            fillColor: "#3b82f6", 
+            fillOpacity: 0.15
+        });
+        map.addOverlay(circle);
+        overlays.push(circle);
+    }
+    
     endMarker.addEventListener('click', () => {
-        map.openInfoWindow(new BMap.InfoWindow(popupMobile(lastValidPt)), pt(lastValidPt));
+        map.openInfoWindow(new BMap.InfoWindow(popupMobile(lastValidPt)), endPt);
     });
 }
 

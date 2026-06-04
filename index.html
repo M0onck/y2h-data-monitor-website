@@ -67,7 +67,7 @@
             <button class="layer" data-layer="co2" onclick="drawLayer('co2')">CO₂</button>
         </div>
 
-        <div class="section">实时仪表盘 (<span id="mobileDeviceName" style="color:#93c5fd">未选择</span>)</div>
+        <div class="section">实时监测数据 (<span id="mobileDeviceName" style="color:#93c5fd">未选择</span>)</div>
         <div class="live-metrics" id="mobileMetricsBoard">
             <div class="metric-card"><span class="metric-name">PM2.5</span><span class="metric-val" id="val-pm25">-</span></div>
             <div class="metric-card"><span class="metric-name">PM10</span><span class="metric-val" id="val-pm10">-</span></div>
@@ -77,7 +77,7 @@
             <div class="metric-card"><span class="metric-name">CO₂</span><span class="metric-val" id="val-co2">-</span></div>
             <div class="metric-card"><span class="metric-name">车速</span><span class="metric-val" id="val-speed">-</span></div>
             <div class="metric-card"><span class="metric-name">搜星数</span><span class="metric-val" id="val-sat">-</span></div>
-            <div class="metric-card"><span class="metric-name">信号</span><span class="metric-val" id="val-fix">-</span></div>
+            <div class="metric-card"><span class="metric-name">信号(SNR)</span><span class="metric-val" id="val-snr">-</span></div>
         </div>
 
         <div class="section">走航时间轴</div>
@@ -102,7 +102,7 @@
         <div class="small" style="margin-bottom: 8px;">点击解锁后可在右侧地图自由点选修正固定站坐标，重新锁定即刻云端保存。</div>
 
         <div class="section">
-            定点综合看板 (<span id="statDeviceName" style="color:#93c5fd">未选择</span>)
+            实时监测数据 (<span id="statDeviceName" style="color:#93c5fd">未选择</span>)
             <span id="statDeviceStatus" style="font-size:11px; padding:2px 6px; border-radius:4px; background:#666; color:#fff; margin-left:6px;">离线/未知</span>
         </div>
         
