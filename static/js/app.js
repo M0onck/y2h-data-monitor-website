@@ -7,11 +7,13 @@ map.enableScrollWheelZoom(true);
 let overlays = [], points = [];
 let globalDeviceMarkers = {}; // 用于存储全局站点图标
 let currentLayer = 'track', autoRefresh = true;
+let aiOverlays = [];
 
 // 状态机变量
 let currentDeviceId = null; 
 let currentDeviceType = null; 
 let isPanelCollapsed = false; // 控制面板是否折叠的状态标志
+let isAiPanelOpen = true;
 const REFRESH_INTERVAL = 5000;
 
 // ======================== 面板折叠展开机制 ========================
@@ -35,6 +37,32 @@ function clearOverlays() {
 }
 function pt(d) { return new BMap.Point(d.lng, d.lat); }
 function val(v) { return (v === null || v === undefined || v === '' || v === '--' || String(v) === 'NaN') ? '-' : v; }
+function escapeHtml(text) {
+    return String(text ?? '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[ch]));
+}
+
+function clearAiOverlays() {
+    aiOverlays.forEach(o => map.removeOverlay(o));
+    aiOverlays = [];
+}
+
+function toggleAiAdvisor(forceOpen) {
+    if (typeof forceOpen === 'boolean') {
+        isAiPanelOpen = forceOpen;
+    } else {
+        isAiPanelOpen = !isAiPanelOpen;
+    }
+
+    const panel = document.getElementById('aiPanel');
+    const fab = document.getElementById('aiFab');
+    if (!panel || !fab) return;
+
+    panel.classList.toggle('open', isAiPanelOpen);
+    fab.classList.toggle('active', isAiPanelOpen);
+    fab.setAttribute('aria-expanded', String(isAiPanelOpen));
+}
 
 function colorRamp(t) {
     t = Math.max(0, Math.min(1, t));
@@ -179,6 +207,115 @@ function drawStationMarker(pt) {
     stationMarker = new BMap.Marker(pt, {icon: getDeviceIcon('stationary')});
     map.addOverlay(stationMarker);
     document.getElementById('coordText').innerText = `坐标: ${pt.lng.toFixed(5)}, ${pt.lat.toFixed(5)}`;
+}
+
+// ======================== Y2H-RAG 智能研判助手 ========================
+async function askAiAdvisor() {
+    const questionEl = document.getElementById('aiQuestion');
+    const hoursEl = document.getElementById('aiHours');
+    const statusEl = document.getElementById('aiStatus');
+    const resultEl = document.getElementById('aiResult');
+    const panelEl = document.getElementById('aiPanel');
+    const question = questionEl.value.trim();
+    const hours = Number(hoursEl.value || 2);
+
+    if (!question) {
+        statusEl.innerText = '请输入需要研判的问题。';
+        return;
+    }
+
+    statusEl.innerText = '正在聚合近实时数据并检索治理知识库...';
+    if (panelEl) panelEl.classList.add('has-result');
+    resultEl.style.display = 'block';
+    resultEl.innerHTML = '<div class="ai-loading">研判中...</div>';
+
+    try {
+        const res = await fetch('/api/ai/query', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({question, hours, use_llm: true})
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+            throw new Error(data.detail || 'AI研判失败');
+        }
+        statusEl.innerText = data.mode === 'llm-rag'
+            ? '已使用大模型 + RAG 生成回答。'
+            : '已使用本地风险计算 + RAG 知识库生成回答。';
+        renderAiResult(data);
+    } catch (err) {
+        console.error('AI advisor error', err);
+        statusEl.innerText = 'AI研判失败，请检查后端服务。';
+        resultEl.innerHTML = `<div class="ai-error">${escapeHtml(err.message || err)}</div>`;
+    }
+}
+
+function renderAiResult(data) {
+    const resultEl = document.getElementById('aiResult');
+    const cards = data.risk_cards || [];
+    const knowledge = data.knowledge || [];
+
+    let cardsHtml = cards.length ? cards.map((card, idx) => {
+        const lng = Number(card.bd_lng || 0);
+        const lat = Number(card.bd_lat || 0);
+        const canFocus = lng && lat;
+        const evidence = (card.evidence || []).slice(0, 2).map(escapeHtml).join('；') || '暂无关键证据';
+        return `
+            <button class="ai-risk-card" ${canFocus ? `onclick="focusAiRisk(${lng}, ${lat}, ${Number(card.risk_score || 0)})"` : ''}>
+                <span class="ai-rank">#${idx + 1}</span>
+                <span class="ai-risk-main">
+                    <b>${escapeHtml(card.risk_level)} · ${escapeHtml(card.risk_score)}/100</b>
+                    <small>${escapeHtml((card.sources || []).join(' / '))} · ${escapeHtml(card.sample_count)} samples</small>
+                    <em>${evidence}</em>
+                </span>
+            </button>
+        `;
+    }).join('') : '<div class="ai-empty">暂无可定位的风险网格。</div>';
+
+    let knowledgeHtml = knowledge.length ? knowledge.map(item => `
+        <div class="ai-knowledge-item">
+            <b>${escapeHtml(item.title)}</b>
+            <span>${escapeHtml(item.content)}</span>
+        </div>
+    `).join('') : '';
+
+    resultEl.innerHTML = `
+        <div class="ai-answer">${escapeHtml(data.answer)}</div>
+        <div class="ai-subtitle">风险网格</div>
+        <div class="ai-risk-list">${cardsHtml}</div>
+        <div class="ai-subtitle">检索依据</div>
+        <div class="ai-knowledge">${knowledgeHtml}</div>
+        <div class="ai-footnote">数据窗口：近 ${escapeHtml(data.hours)} 小时；走航 ${escapeHtml(data.data_counters?.mobile_rows ?? 0)} 条，定点 ${escapeHtml(data.data_counters?.stationary_rows ?? 0)} 条，边缘快照 ${escapeHtml(data.data_counters?.edge_rows ?? 0)} 条。</div>
+    `;
+}
+
+function focusAiRisk(lng, lat, score) {
+    if (!lng || !lat) return;
+    clearAiOverlays();
+    const p = new BMap.Point(lng, lat);
+    map.panTo(p);
+    if (map.getZoom() < 17) map.setZoom(17);
+
+    const radius = score >= 75 ? 90 : score >= 50 ? 70 : 50;
+    const circle = new BMap.Circle(p, radius, {
+        strokeColor: '#f97316',
+        strokeWeight: 2,
+        strokeOpacity: 0.9,
+        fillColor: '#f97316',
+        fillOpacity: 0.22
+    });
+    const label = new BMap.Label(`AI风险 ${score}/100`, {position: p, offset: new BMap.Size(12, -28)});
+    label.setStyle({
+        color: '#111827',
+        backgroundColor: '#fbbf24',
+        border: '0',
+        borderRadius: '6px',
+        padding: '5px 8px',
+        fontWeight: '700'
+    });
+    map.addOverlay(circle);
+    map.addOverlay(label);
+    aiOverlays.push(circle, label);
 }
 
 // ======================== 数据加载与渲染核心 ========================

@@ -1,14 +1,26 @@
 # 忽略 Python 缓存
 __pycache__/
+**/__pycache__/
 *.pyc
 
 # 忽略本地生成的环境数据和视频流文件
 *.csv
 *.mp4
 *.avi
+outputs/
 
 # 忽略数据库文件
 *.db
+*.sqlite
+*.sqlite3
+
+# 忽略本地密钥和编辑器配置
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
 
 # 忽略系统文件
 .DS_Store
+Thumbs.db
