@@ -5,6 +5,7 @@ map.enableInertialDragging();
 map.enableScrollWheelZoom(true);
 
 let overlays = [], points = [];
+let globalDeviceMarkers = {}; // 用于存储全局站点图标
 let currentLayer = 'track', autoRefresh = true;
 
 // 状态机变量
@@ -55,6 +56,16 @@ function setActive(l) {
     document.querySelectorAll('button.layer').forEach(b => b.classList.toggle('active', b.dataset.layer === l));
 }
 
+// 全局地图气泡图标生成器 (带阴影底图 + 内部设备图标)
+function getDeviceIcon(type) {
+    let svgStr = type === 'mobile'
+        ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48"><filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="3" stdDeviation="3" flood-opacity="0.4"/></filter><path fill="#3b82f6" filter="url(#shadow)" d="M24 2C13 2 4 11 4 22c0 13 20 24 20 24s20-11 20-24C44 11 35 2 24 2z"/><circle cx="24" cy="20" r="14" fill="#ffffff"/><g transform="translate(14, 10) scale(0.83)"><path fill="#3b82f6" d="M14 3.2c.5 0 1 .4 1 1 0 .6-.5 1-1 1s-1-.4-1-1 .4-1 1-1zm3 3l-3 0c-1.7 0-3 1.3-3 3l0 1-2.7 0c-1.1-1.8-3-3-5.3-3l0 2c1.7 0 3.2 1 3.8 2.5l1.2 3.5c.2.5.7 1 1.2 1l2.8 0 0-2-2.2 0-1-3 2.2 0 0 4 2 0 0-6c0-.6.4-1 1-1l3 0 0-2zm-12 8c-1.7 0-3 1.3-3 3s1.3 3 3 3 3-1.3 3-3-1.3-3-3-3zm0 4.5c-.8 0-1.5-.7-1.5-1.5s.7-1.5 1.5-1.5 1.5.7 1.5 1.5-.7 1.5-1.5 1.5zm14-4.5c-1.7 0-3 1.3-3 3s1.3 3 3 3 3-1.3 3-3-1.3-3-3-3zm0 4.5c-.8 0-1.5-.7-1.5-1.5s.7-1.5 1.5-1.5 1.5.7 1.5 1.5-.7 1.5-1.5 1.5z"/></g></svg>'
+        : '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48"><filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="3" stdDeviation="3" flood-opacity="0.4"/></filter><path fill="#f59e0b" filter="url(#shadow)" d="M24 2C13 2 4 11 4 22c0 13 20 24 20 24s20-11 20-24C44 11 35 2 24 2z"/><circle cx="24" cy="20" r="14" fill="#ffffff"/><g transform="translate(14, 10) scale(0.83)"><path fill="#f59e0b" d="M12 2c2.2 0 4 1.8 4 4 0 1.6-.9 3-2.3 3.6L14 22h-4l.3-12.4C8.9 9 8 7.6 8 6c0-2.2 1.8-4 4-4zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zM4 11h4v2H4v-2zm12 0h4v2h-4v-2zM6 15h3v2H6v-2zm9 0h3v2h-3v-2z"/></g></svg>';
+    
+    // 图标整体放大为 48x48，底部针尖锚点精确定位在(24, 46)以紧贴地图轨迹线
+    return new BMap.Icon('data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgStr), new BMap.Size(48, 48), {anchor: new BMap.Size(24, 46)});
+}
+
 // 走航气泡弹窗
 function popupMobile(d) {
     let fix_text = "未定位";
@@ -71,10 +82,8 @@ function popupMobile(d) {
 
 // ======================== 设备交互与折叠逻辑 ========================
 function selectDevice(id, type) {
-    // 1. 点击已被选中的设备 -> 执行【收起二级面板】操作
     if(currentDeviceId === id) {
-        currentDeviceId = null;
-        currentDeviceType = null;
+        currentDeviceId = null; currentDeviceType = null;
         document.getElementById('mobileDashboard').style.display = 'none';
         document.getElementById('stationaryDashboard').style.display = 'none';
         document.querySelectorAll('.device-item').forEach(el => el.classList.remove('active-device'));
@@ -83,9 +92,13 @@ function selectDevice(id, type) {
         return;
     }
     
-    // 2. 点击新设备 -> 执行【展开对应二级面板】操作
     currentDeviceId = id;
     currentDeviceType = type;
+    
+    // 【核心新增：点击列表时，地图视口瞬间平滑移动到该设备图标所在处】
+    if (globalDeviceMarkers[id]) {
+        map.panTo(globalDeviceMarkers[id].getPosition());
+    }
     
     document.querySelectorAll('.device-item').forEach(el => {
         el.classList.remove('active-device');
@@ -100,7 +113,7 @@ function selectDevice(id, type) {
         document.getElementById('mobileDashboard').style.display = 'none';
         document.getElementById('stationaryDashboard').style.display = 'block';
         document.getElementById('statDeviceName').innerText = id;
-        isMapUnlocked = false; // 切换设备时强制锁定
+        isMapUnlocked = false; 
         document.getElementById('lockBtn').innerText = '🔒 解锁选点';
         document.getElementById('lockBtn').style.background = '#334155';
         map.setDefaultCursor("default");
@@ -163,7 +176,7 @@ map.addEventListener('click', function(e) {
 
 function drawStationMarker(pt) {
     if(stationMarker) map.removeOverlay(stationMarker);
-    stationMarker = new BMap.Marker(pt);
+    stationMarker = new BMap.Marker(pt, {icon: getDeviceIcon('stationary')});
     map.addOverlay(stationMarker);
     document.getElementById('coordText').innerText = `坐标: ${pt.lng.toFixed(5)}, ${pt.lat.toFixed(5)}`;
 }
@@ -174,20 +187,26 @@ async function fetchDevices(autoSelect = false) {
         let res = await fetch('/api/devices');
         let data = await res.json();
         
-        let mobileHtml = '';
-        let statHtml = '';
+        let mobileHtml = ''; let statHtml = '';
+        
+        // 记录本轮还在的设备，用于清理掉已删除的设备的全局图标
+        let currentIds = new Set(data.devices.map(d => d.id));
+        for (let id in globalDeviceMarkers) {
+            if (!currentIds.has(id)) {
+                map.removeOverlay(globalDeviceMarkers[id]);
+                delete globalDeviceMarkers[id];
+            }
+        }
         
         data.devices.forEach(d => {
-            // 【核心修改 1】：引入状态机映射，新增定位中 (locating) 的黄色样式
             let statusObj = {
-                'online': { text: '在线', dotBg: '#10b981', badgeBg: '#10b981' }, // 绿灯
-                'locating': { text: '定位中', dotBg: '#f59e0b', badgeBg: '#f59e0b' }, // 黄灯
-                'offline': { text: '离线', dotBg: '#64748b', badgeBg: '#334155' } // 灰灯
+                'online': { text: '在线', dotBg: '#10b981', badgeBg: '#10b981' }, 
+                'locating': { text: '定位中', dotBg: '#f59e0b', badgeBg: '#f59e0b' },
+                'offline': { text: '离线', dotBg: '#64748b', badgeBg: '#334155' } 
             }[d.status] || { text: '未知', dotBg: '#64748b', badgeBg: '#334155' };
 
             let activeClass = (d.id === currentDeviceId) ? 'active-device' : '';
             
-            // 注意这里去掉了 statusClass，直接使用 style 内联渲染颜色，防止没有对应 css 类
             let item = `
             <div class="device-item ${activeClass}" data-id="${d.id}" onclick="selectDevice('${d.id}', '${d.type}')">
                 <div>
@@ -202,14 +221,32 @@ async function fetchDevices(autoSelect = false) {
             
             if (d.type === 'mobile') mobileHtml += item;
             else statHtml += item;
+            
+            // 【核心新增：在地图上绘制全局站点图标】
+            if (d.lng !== null && d.lat !== null) {
+                let pt = new BMap.Point(d.lng, d.lat);
+                if (!globalDeviceMarkers[d.id]) {
+                    // 直接调用函数获取对应设备的复合大图标
+                    let marker = new BMap.Marker(pt, {icon: getDeviceIcon(d.type)});
+                    
+                    // 让标签向右上方稍微偏移，避开 48x48 大气泡的主体
+                    let label = new BMap.Label(d.id, {offset: new BMap.Size(26, -10)});
+                    label.setStyle({color: "#1e293b", backgroundColor: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: "4px", padding: "2px 6px", fontSize: "11px", boxShadow: "0 2px 4px rgba(0,0,0,0.1)"});
+                    marker.setLabel(label);
+                    
+                    marker.addEventListener("click", () => selectDevice(d.id, d.type));
+                    map.addOverlay(marker);
+                    globalDeviceMarkers[d.id] = marker;
+                } else {
+                    globalDeviceMarkers[d.id].setPosition(pt);
+                }
+            }
         });
         
         document.getElementById('mobileDeviceList').innerHTML = mobileHtml || '<div class="small">暂无设备</div>';
         document.getElementById('stationaryDeviceList').innerHTML = statHtml || '<div class="small">暂无固定站设备</div>';
         
-    } catch(e) {
-        console.error("加载设备列表失败", e);
-    }
+    } catch(e) { console.error("加载设备列表失败", e); }
 }
 
 async function loadData(fit = true) {
@@ -337,7 +374,7 @@ function drawTrack(sub) {
     
     let lastValidPt = validData[validData.length - 1];
     let endPt = pt(lastValidPt);
-    let endMarker = new BMap.Marker(endPt);
+    let endMarker = new BMap.Marker(endPt, {icon: getDeviceIcon('mobile')});
     map.addOverlay(endMarker);
     overlays.push(endMarker);
     
@@ -387,9 +424,19 @@ function drawMode(m) { currentLayer = m; drawTrack(currentSub()); }
 function drawLayer(f) { currentLayer = f; drawValueLayer(currentSub(), f); }
 function drawUntilSlider() {
     if (points.length === 0) return;
-    if (currentLayer === 'track') drawTrack(currentSub());
-    else drawValueLayer(currentSub(), currentLayer);
-    updateMobileDashboard(currentSub()[currentSub().length - 1]);
+    let sub = currentSub();
+    if (currentLayer === 'track') drawTrack(sub);
+    else drawValueLayer(sub, currentLayer);
+    
+    let latestPt = sub[sub.length - 1];
+    updateMobileDashboard(latestPt);
+    
+    // 【核心新增：提取当前数据点的时间（时分秒），并渲染到占位符 span 中】
+    let timeDisp = document.getElementById('sliderTimeDisplay');
+    if (timeDisp && latestPt && latestPt.time) {
+        let t = latestPt.time.split(' ')[1] || latestPt.time; // 切割出后面的时分秒
+        timeDisp.innerText = `(${t})`;
+    }
 }
 
 function setDates(dates, selectId) {

@@ -243,15 +243,18 @@ def get_devices(auth: bool = Depends(check_login)):
     
     devices = []
     now = datetime.now()
-    now_ts = now.timestamp() # 获取浮点时间戳用于和边缘端比较
+    now_ts = now.timestamp()
     
     # === 1. 移动设备 ===
+    # 【修改】：增加了对最新真实有效经纬度的子查询提取
     c.execute('''
         SELECT 
             m1.device_id, 
             MAX(m1.timestamp) as last_seen, 
             COUNT(m1.id) as total_points,
-            (SELECT gps_state FROM mobile_data m2 WHERE m2.device_id = m1.device_id ORDER BY timestamp DESC LIMIT 1) as latest_gps_state
+            (SELECT gps_state FROM mobile_data m2 WHERE m2.device_id = m1.device_id ORDER BY timestamp DESC LIMIT 1) as latest_gps_state,
+            (SELECT latitude FROM mobile_data m2 WHERE m2.device_id = m1.device_id AND latitude IS NOT NULL AND ABS(latitude - 32.060255) > 0.00001 ORDER BY timestamp DESC LIMIT 1) as lat,
+            (SELECT longitude FROM mobile_data m2 WHERE m2.device_id = m1.device_id AND longitude IS NOT NULL AND ABS(longitude - 118.796877) > 0.00001 ORDER BY timestamp DESC LIMIT 1) as lon
         FROM mobile_data m1
         WHERE m1.device_id IS NOT NULL 
         GROUP BY m1.device_id 
@@ -260,63 +263,73 @@ def get_devices(auth: bool = Depends(check_login)):
     
     for r in c.fetchall():
         dt_seen = datetime.strptime(r["last_seen"], "%Y-%m-%d %H:%M:%S") if r["last_seen"] else datetime.min
-        sec_since_seen = (now - dt_seen).total_seconds()
         
-        # 5分钟不发数据就是离线
-        if sec_since_seen > 300:
+        if (now - dt_seen).total_seconds() > 300:
             status = "offline"
         elif r["latest_gps_state"] == "locating":
             status = "locating"
         else:
             status = "online"
             
+        # 转换为百度坐标系供前端直接打点
+        lat, lon = r["lat"], r["lon"]
+        bd_lon, bd_lat = None, None
+        if lat is not None and lon is not None:
+            bd_lon, bd_lat = wgs84_to_bd09(lon, lat)
+            
         devices.append({
-            "id": r["device_id"], 
-            "type": "mobile", 
-            "last_seen": r["last_seen"], 
-            "total_points": r["total_points"], 
-            "status": status
+            "id": r["device_id"], "type": "mobile", "last_seen": r["last_seen"], 
+            "total_points": r["total_points"], "status": status,
+            "lng": round(bd_lon, 7) if bd_lon else None, "lat": round(bd_lat, 7) if bd_lat else None
         })
         
-    # === 2. 查阅边缘快照心跳 (加入防崩保护) ===
+    # === 2. 查阅边缘快照心跳 ===
     edge_last_seen_map = {}
     try:
-        # edge_snapshots 表里的 timestamp 存的是 float 
         c.execute("SELECT device_id, MAX(timestamp) as edge_last_seen FROM edge_snapshots GROUP BY device_id")
         edge_last_seen_map = {row["device_id"]: row["edge_last_seen"] for row in c.fetchall()}
     except sqlite3.OperationalError:
-        pass # 如果还没建表则安静地跳过
+        pass 
         
-    # === 3. 定点设备 (融合你的原逻辑与边缘端心跳) ===
-    c.execute('SELECT device_id, MAX(timestamp) as last_seen, COUNT(id) as total_points FROM stationary_data WHERE device_id IS NOT NULL GROUP BY device_id ORDER BY last_seen DESC')
+    # === 3. 定点设备 ===
+    # 【修改】：同样增加对定点设备坐标的提取
+    c.execute('''
+        SELECT 
+            s1.device_id, 
+            MAX(s1.timestamp) as last_seen, 
+            COUNT(s1.id) as total_points,
+            (SELECT latitude FROM stationary_data s2 WHERE s2.device_id = s1.device_id ORDER BY timestamp DESC LIMIT 1) as lat,
+            (SELECT longitude FROM stationary_data s2 WHERE s2.device_id = s1.device_id ORDER BY timestamp DESC LIMIT 1) as lon
+        FROM stationary_data s1 
+        WHERE s1.device_id IS NOT NULL 
+        GROUP BY s1.device_id 
+        ORDER BY last_seen DESC
+    ''')
+    
     for r in c.fetchall():
         device_id = r["device_id"]
         dt = datetime.strptime(r["last_seen"], "%Y-%m-%d %H:%M:%S") if r["last_seen"] else datetime.min
-        
-        # 默认按原表时间判断
         is_online = (now - dt).total_seconds() <= 300
         
-        # [核心修复] 如果边缘快照表里有 300 秒内的新心跳，强制判定为在线！
         if device_id in edge_last_seen_map:
             edge_ts = edge_last_seen_map[device_id]
             if edge_ts:
                 try:
-                    if (now_ts - float(edge_ts)) <= 300:
-                        is_online = True
-                except (ValueError, TypeError):
-                    pass
+                    if (now_ts - float(edge_ts)) <= 300: is_online = True
+                except (ValueError, TypeError): pass
+                
+        lat, lon = r["lat"], r["lon"]
+        bd_lon, bd_lat = None, None
+        if lat is not None and lon is not None:
+            bd_lon, bd_lat = wgs84_to_bd09(lon, lat)
                     
         devices.append({
-            "id": device_id, 
-            "type": "stationary", 
-            "last_seen": r["last_seen"], 
-            "total_points": r["total_points"], 
-            "status": "online" if is_online else "offline"
+            "id": device_id, "type": "stationary", "last_seen": r["last_seen"], 
+            "total_points": r["total_points"], "status": "online" if is_online else "offline",
+            "lng": round(bd_lon, 7) if bd_lon else None, "lat": round(bd_lat, 7) if bd_lat else None
         })
         
     conn.close()
-    
-    # 完美保持原有的 JSON 结构返回
     return {"ok": True, "devices": devices}
 
 @app.get("/api")
