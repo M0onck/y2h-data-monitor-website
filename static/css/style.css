@@ -1,0 +1,119 @@
+html,body,#map{width:100%;height:100%;margin:0;padding:0;overflow:hidden}
+body{font-family:system-ui,"Microsoft YaHei",sans-serif;background:#0f172a}
+#map{position:absolute;inset:0}
+
+/* ================= 主面板及动画 ================= */
+.panel{
+    position:absolute;top:16px;left:16px;z-index:999;width:420px;max-height:92vh;overflow:auto;
+    background:rgba(15,23,42,0.92);border-radius:24px;border:1.5px solid #334155;
+    box-shadow:0 12px 40px rgba(0,0,0,0.5);padding:22px;color:#f8fafc;font-size:13px;
+    backdrop-filter:blur(8px);
+    transform-origin: top left;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.panel.collapsed {
+    opacity: 0;
+    transform: scale(0.6) translateY(-40px) translateX(-40px);
+    pointer-events: none; 
+}
+
+/* ================= 顶部圆形控制按钮统一排版 ================= */
+.top-action-btn {
+    position: absolute; top: 22px; width: 32px; height: 32px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px; font-weight: bold; border: none; cursor: pointer; text-decoration: none;
+    transition: 0.2s; z-index: 1000; padding: 0; line-height: 1;
+}
+.min-btn { right: 64px; background: #334155; color: white; }
+.min-btn:hover { background: #475569; }
+.logout-btn { right: 22px; background: #ef4444; color: white; }
+.logout-btn:hover { background: #dc2626; }
+
+
+/* ================= 悬浮圆形恢复按钮 (FAB) ================= */
+.fab {
+    position: absolute; top: 24px; left: 24px; z-index: 1000;
+    width: 48px; height: 48px; background: #2563eb; border-radius: 50%;
+    color: white; font-size: 20px; display: flex; align-items: center; justify-content: center;
+    cursor: pointer; box-shadow: 0 6px 20px rgba(37, 99, 235, 0.4);
+    opacity: 0; pointer-events: none; transform: scale(0.5);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.fab:hover { background: #1d4ed8; }
+.fab.visible {
+    opacity: 1; pointer-events: auto; transform: scale(1);
+}
+
+.title{font-size:22px;font-weight:800;background:linear-gradient(90deg,#60a5fa,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:4px}
+.sub{color:#94a3b8;font-size:11px;margin-bottom:18px}
+
+.row{display:flex;align-items:center;gap:8px;margin:10px 0;flex-wrap:wrap}
+.label{font-weight:700;color:#94a3b8}
+input,select{font-size:13px;padding:8px 10px;border:1.5px solid #475569;border-radius:12px;background:#1e293b;color:white;cursor:pointer}
+button{padding:8px 14px;border:0;border-radius:999px;background:#334155;color:#f1f5f9;cursor:pointer;font-size:13px;font-weight:bold;transition:.15s}
+button:hover{background:#475569}.primary{background:#2563eb;color:white}.primary:hover{background:#1d4ed8}
+
+.layer{background:#1e293b;border:1px solid #334155}
+.layer.active{background:#2563eb;color:white;border-color:#2563eb}
+.section{margin-top:20px;font-size:11px;font-weight:800;color:#64748b;text-transform:uppercase;letter-spacing:1px;border-bottom:1px solid #1e293b;padding-bottom:6px;margin-bottom:10px}
+.group{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}
+
+/* 接入设备列表样式 */
+.device-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px;}
+.device-item { display: flex; justify-content: space-between; align-items: center; background: #0f172a; padding: 10px 14px; border-radius: 12px; border: 1.5px solid #334155; cursor: pointer; transition: 0.2s;}
+.device-item:hover { background: #1e293b; border-color: #475569; }
+.device-item.active-device { background: #172554; border-color: #3b82f6; box-shadow: 0 4px 15px rgba(59, 130, 246, 0.2); }
+.device-item .d-name { font-weight: bold; color: #f8fafc; font-size: 13px; display: flex; align-items: center;}
+.device-item .d-time { font-size: 11px; color: #94a3b8; margin-top: 4px;}
+.status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; }
+.status-dot.online { background: #10b981; box-shadow: 0 0 8px #10b981; }
+.status-dot.offline { background: #64748b; }
+.badge{display:inline-block;padding:4px 8px;border-radius:999px;background:#1e293b;border:1px solid #334155;margin:2px;color:#cbd5e1;font-size:11px}
+
+/* 实时参数仪表盘 */
+.live-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 12px 0; }
+.metric-card { background: #1e293b; padding: 12px 8px; border-radius: 14px; text-align: center; border: 1.5px solid #334155; }
+.metric-val { font-size: 15px; font-weight: 800; color: #60a5fa; display: block; margin-top: 6px; }
+.metric-name { font-size: 11px; color: #94a3b8; font-weight: bold; }
+
+.slider{width:100%;margin-top:6px;cursor:pointer}
+.zoomBtns{position:absolute;right:14px;bottom:18px;z-index:1000;display:flex;flex-direction:column;gap:8px}
+.zoomBtns button{width:46px;height:46px;border-radius:14px;background:#1e293b;border:1.5px solid #334155;color:#f8fafc;font-size:24px;font-weight:800;box-shadow:0 6px 20px rgba(0,0,0,0.4);padding:0;line-height:1;cursor:pointer}
+.zoomBtns button:hover{background:#334155}
+
+#mobileDashboard, #stationaryDashboard { animation: fadeIn 0.3s ease-in-out;}
+@keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+
+/* ================= 手机端深度自适应优化 ================= */
+@media (max-width: 600px){
+    .panel {
+        left: 10px; right: 10px; top: auto; bottom: 10px;
+        width: auto; max-height: 48vh; 
+        padding: 15px; border-radius: 20px;
+        transform-origin: bottom left; 
+    }
+    .panel.collapsed {
+        transform: scale(0.6) translateY(40px) translateX(-40px);
+    }
+    
+    .fab { top: auto; bottom: 20px; left: 20px; } 
+    
+    .title { font-size: 18px; margin-bottom: 2px; }
+    .sub { font-size: 10px; margin-bottom: 10px; }
+    .row { gap: 6px; margin: 6px 0; }
+    input, select, button { font-size: 11px; padding: 6px 8px; }
+    .section { margin-top: 14px; margin-bottom: 8px; font-size: 10px; }
+    
+    .zoomBtns { right: 12px; top: 16px; bottom: auto; }
+    .zoomBtns button { width: 38px; height: 38px; font-size: 20px; border-radius: 10px; }
+    
+    .live-metrics { gap: 6px; margin: 8px 0; }
+    .metric-card { padding: 8px 4px; border-radius: 10px; }
+    .metric-val { font-size: 13px; margin-top: 4px; }
+    .metric-name { font-size: 10px; }
+    
+    /* 手机端排版避开地图缩放按钮 */
+    .top-action-btn { top: 16px; width: 32px; height: 32px; font-size: 18px; }
+    .logout-btn { right: 60px; } 
+    .min-btn { right: 100px; } 
+}

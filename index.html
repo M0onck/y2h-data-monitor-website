@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Y2H 云端环境感知走航系统</title>
+    
+    <!-- 升级版本号至 1.2，强制刷新 CSS 缓存 -->
+    <link rel="stylesheet" href="/static/css/style.css?v=1.2">
+    
+    <script src="https://api.map.baidu.com/api?v=3.0&ak=cjefPeFvlo8Cv68BCpYA2b3vn1EM8tNm"></script>
+    <script src="https://api.map.baidu.com/library/Heatmap/2.0/src/Heatmap_min.js"></script>
+</head>
+<body>
+<div id="map"></div>
+
+<!-- 地图缩放控件 -->
+<div class="zoomBtns">
+    <button onclick="map.zoomIn()">＋</button>
+    <button onclick="map.zoomOut()">－</button>
+</div>
+
+<!-- 最小化后的悬浮恢复按钮 (默认隐藏) -->
+<div id="fab" class="fab" onclick="togglePanel()" title="展开面板">🎛️</div>
+
+<!-- 主控制面板 -->
+<div class="panel" id="mainPanel">
+    
+    <!-- 统一的右上角圆形控制按钮 -->
+    <button class="top-action-btn min-btn" onclick="togglePanel()" title="最小化面板">-</button>
+    <a href="/logout" class="top-action-btn logout-btn" title="安全退出">×</a>
+
+    <div class="title">Y2H 环境感知云终端</div>
+    <div class="sub">走航-定点多模态监测归集平台</div>
+    
+    <div class="small" style="margin-bottom: 12px; color: #94a3b8; background: #1e293b; padding: 6px 10px; border-radius: 8px; border: 1px solid #334155;">
+        💡 <b>交互提示</b>：点击下方设备即可展开详情面板，再次点击该设备即可收起面板，方便查看全屏地图。
+    </div>
+
+    <!-- 列表 1：走航设备 -->
+    <div class="section" style="margin-top: 10px;">走航监测设备 (MOBILE DEVICES)</div>
+    <div class="device-list" id="mobileDeviceList"><div class="small">加载中...</div></div>
+
+    <!-- 列表 2：定点设备 -->
+    <div class="section">定点监测设备 (STATIONARY STATIONS)</div>
+    <div class="device-list" id="stationaryDeviceList"><div class="small">加载中...</div></div>
+
+    <!-- ============================================ -->
+    <!-- 控制台 A：走航监测专属控制台 (折叠展示) -->
+    <!-- ============================================ -->
+    <div id="mobileDashboard" style="display: none;">
+        <div class="row">
+            <span class="label">日期</span><select id="dateSelectMobile" onchange="loadData(true)"></select>
+            <span class="label">时间</span><input id="startTime" type="time" value="00:00" style="width:64px"><span>-</span><input id="endTime" type="time" value="23:59" style="width:64px">
+        </div>
+        <div class="row">
+            <button class="primary" onclick="loadData(true)">刷新追踪</button>
+            <button onclick="toggleAuto()" id="autoBtn" style="background:#1e3a8a">自动刷新：开</button>
+        </div>
+        
+        <div class="section">地图呈现层 (MAP LAYERS)</div>
+        <div class="group">
+            <button class="layer active" data-layer="track" onclick="drawMode('track')">GPS轨迹</button>
+            <button class="layer" data-layer="pm25" onclick="drawLayer('pm25')">PM2.5</button>
+            <button class="layer" data-layer="pm10" onclick="drawLayer('pm10')">PM10</button>
+            <button class="layer" data-layer="voc" onclick="drawLayer('voc')">VOC</button>
+            <button class="layer" data-layer="co2" onclick="drawLayer('co2')">CO₂</button>
+        </div>
+
+        <div class="section">实时仪表盘 (<span id="mobileDeviceName" style="color:#93c5fd">未选择</span>)</div>
+        <div class="live-metrics" id="mobileMetricsBoard">
+            <div class="metric-card"><span class="metric-name">PM2.5</span><span class="metric-val" id="val-pm25">-</span></div>
+            <div class="metric-card"><span class="metric-name">PM10</span><span class="metric-val" id="val-pm10">-</span></div>
+            <div class="metric-card"><span class="metric-name">VOC</span><span class="metric-val" id="val-voc">-</span></div>
+            <div class="metric-card"><span class="metric-name">温度</span><span class="metric-val" id="val-temp">-</span></div>
+            <div class="metric-card"><span class="metric-name">湿度</span><span class="metric-val" id="val-rh">-</span></div>
+            <div class="metric-card"><span class="metric-name">CO₂</span><span class="metric-val" id="val-co2">-</span></div>
+            <div class="metric-card"><span class="metric-name">车速</span><span class="metric-val" id="val-speed">-</span></div>
+            <div class="metric-card"><span class="metric-name">搜星数</span><span class="metric-val" id="val-sat">-</span></div>
+            <div class="metric-card"><span class="metric-name">信号</span><span class="metric-val" id="val-fix">-</span></div>
+        </div>
+
+        <div class="section">走航时间轴</div>
+        <input class="slider" id="timeSlider" type="range" min="0" max="0" value="0" oninput="drawUntilSlider()">
+        <div id="mobileSummary" class="small" style="margin-top:8px"></div>
+    </div>
+
+    <!-- ============================================ -->
+    <!-- 控制台 B：定点监测专属控制台 (折叠展示) -->
+    <!-- ============================================ -->
+    <div id="stationaryDashboard" style="display: none;">
+        <div class="row">
+            <span class="label">日期</span><select id="dateSelectStat" onchange="loadData(true)"></select>
+            <button class="primary" onclick="loadData(true)" style="margin-left:auto">刷新数据</button>
+        </div>
+
+        <div class="section">站址地图标定 (LOCATION PICKER)</div>
+        <div class="row">
+            <button id="lockBtn" onclick="toggleMapLock()" style="background:#334155; padding: 10px 14px;">🔒 解锁选点</button>
+            <span id="coordText" style="color:#93c5fd; font-size:12px; margin-left: 6px;">坐标: 未设定</span>
+        </div>
+        <div class="small" style="margin-bottom: 8px;">点击解锁后可在右侧地图自由点选修正固定站坐标，重新锁定即刻云端保存。</div>
+
+        <div class="section">
+            定点综合看板 (<span id="statDeviceName" style="color:#93c5fd">未选择</span>)
+            <span id="statDeviceStatus" style="font-size:11px; padding:2px 6px; border-radius:4px; background:#666; color:#fff; margin-left:6px;">离线/未知</span>
+        </div>
+        
+        <div class="live-metrics" style="grid-template-columns: repeat(3, 1fr);">
+            <div class="metric-card"><span class="metric-name">车辆总数</span><span class="metric-val" id="stat-veh_count">-</span></div>
+            <div class="metric-card"><span class="metric-name">轻型车(LDV)</span><span class="metric-val" id="stat-ldv_count">-</span></div>
+            <div class="metric-card"><span class="metric-name">重型车(HDV)</span><span class="metric-val" id="stat-hdv_count">-</span></div>
+            
+            <div class="metric-card"><span class="metric-name">PM2.5</span><span class="metric-val" id="stat-pm25">-</span></div>
+            <div class="metric-card"><span class="metric-name">PM10</span><span class="metric-val" id="stat-pm10">-</span></div>
+            <div class="metric-card"><span class="metric-name">温度</span><span class="metric-val" id="stat-temp">-</span></div>
+            
+            <div class="metric-card"><span class="metric-name">湿度</span><span class="metric-val" id="stat-rh">-</span></div>
+            <div class="metric-card"><span class="metric-name">风速</span><span class="metric-val" id="stat-wind_speed">-</span></div>
+            <div class="metric-card"><span class="metric-name">风向</span><span class="metric-val" id="stat-wind_dir">-</span></div>
+        </div>
+        
+        <div id="statSummary" class="small" style="margin-top:8px"></div>
+    </div>
+
+</div>
+<script src="/static/js/app.js?v=1.2"></script>
+</body>
+</html>
