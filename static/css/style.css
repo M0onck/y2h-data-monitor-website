@@ -58,6 +58,59 @@ button:hover{background:#475569}.primary{background:#2563eb;color:white}.primary
 .section{margin-top:20px;font-size:11px;font-weight:800;color:#64748b;text-transform:uppercase;letter-spacing:1px;border-bottom:1px solid #1e293b;padding-bottom:6px;margin-bottom:10px}
 .group{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}
 
+/* Y2H-RAG 独立智能研判窗口 */
+.ai-fab{
+    position:absolute;top:24px;right:86px;z-index:1002;width:48px;height:48px;border-radius:50%;
+    display:flex;align-items:center;justify-content:center;padding:0;border:1.5px solid #7dd3fc;
+    background:#e0f2fe;color:#075985;font-weight:900;font-size:15px;letter-spacing:.5px;
+    box-shadow:0 8px 24px rgba(14,116,144,.28);cursor:pointer;
+}
+.ai-fab:hover,.ai-fab.active{background:#0ea5e9;color:white;border-color:#38bdf8}
+.ai-panel{
+    position:absolute;top:86px;right:18px;z-index:1001;width:400px;max-height:82vh;overflow:auto;
+    background:rgba(224,242,254,.96);border:1.5px solid #7dd3fc;border-radius:18px;
+    box-shadow:0 16px 42px rgba(8,47,73,.32);padding:16px;color:#0f172a;
+    backdrop-filter:blur(10px);opacity:0;transform:translateX(24px) scale(.96);
+    pointer-events:none;transition:opacity .2s ease,transform .2s ease;
+}
+.ai-panel.open{opacity:1;transform:translateX(0) scale(1);pointer-events:auto}
+.ai-panel-header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
+.ai-title{font-size:18px;font-weight:900;color:#075985;line-height:1.25}
+.ai-sub{font-size:11px;color:#0369a1;margin-top:3px}
+.ai-close-btn{
+    flex:0 0 auto;width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+    padding:0;background:#bae6fd;color:#075985;border:0;font-size:18px;font-weight:900;
+}
+.ai-close-btn:hover{background:#7dd3fc;color:#0c4a6e}
+.ai-console{background:#f0f9ff;border:1.5px solid #bae6fd;border-radius:14px;padding:12px}
+.ai-console textarea{
+    width:100%;box-sizing:border-box;resize:vertical;min-height:82px;max-height:170px;font-size:13px;line-height:1.5;
+    padding:10px 12px;border:1.5px solid #7dd3fc;border-radius:12px;background:#ffffff;color:#0f172a;font-family:inherit;
+}
+.ai-console textarea:focus{outline:none;border-color:#0284c7;box-shadow:0 0 0 3px rgba(14,165,233,.18)}
+.ai-panel .label{color:#075985}
+.ai-panel select{border-color:#7dd3fc;background:#ffffff;color:#0f172a}
+.ai-panel .primary{background:#0284c7;color:#fff}.ai-panel .primary:hover{background:#0369a1}
+.ai-row{margin-bottom:6px}
+.ai-status{color:#0369a1;margin-top:6px}
+.ai-result{margin-top:10px;border-top:1px solid #bae6fd;padding-top:10px}
+.ai-answer{white-space:pre-wrap;background:#ffffff;border:1px solid #bae6fd;border-radius:10px;padding:10px 12px;line-height:1.65;color:#0f172a}
+.ai-subtitle{margin-top:12px;margin-bottom:7px;color:#0369a1;font-size:11px;font-weight:900;letter-spacing:.5px}
+.ai-risk-list{display:flex;flex-direction:column;gap:7px}
+.ai-risk-card{width:100%;display:flex;align-items:flex-start;gap:10px;text-align:left;border-radius:10px;border:1px solid #bae6fd;background:#ffffff;padding:10px;white-space:normal;color:#0f172a}
+.ai-risk-card:hover{background:#e0f2fe;border-color:#0284c7}
+.ai-rank{flex:0 0 auto;background:#0284c7;color:#ffffff;border-radius:7px;font-weight:900;font-size:12px;padding:3px 6px}
+.ai-risk-main{display:flex;flex-direction:column;gap:3px;min-width:0}
+.ai-risk-main b{font-size:13px;color:#0f172a}
+.ai-risk-main small{font-size:11px;color:#0369a1}
+.ai-risk-main em{font-size:11px;color:#334155;font-style:normal;line-height:1.4}
+.ai-knowledge{display:flex;flex-direction:column;gap:6px}
+.ai-knowledge-item{background:#ffffff;border-left:3px solid #0284c7;border-radius:8px;padding:8px 10px;color:#334155;line-height:1.45}
+.ai-knowledge-item b{display:block;color:#075985;margin-bottom:3px}
+.ai-knowledge-item span{font-size:12px}
+.ai-footnote,.ai-loading,.ai-empty,.ai-error{font-size:12px;color:#0369a1;margin-top:9px;line-height:1.45}
+.ai-error{color:#b91c1c}
+
 /* 接入设备列表样式 */
 .device-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px;}
 .device-item { display: flex; justify-content: space-between; align-items: center; background: #0f172a; padding: 10px 14px; border-radius: 12px; border: 1.5px solid #334155; cursor: pointer; transition: 0.2s;}
@@ -88,7 +141,7 @@ button:hover{background:#475569}.primary{background:#2563eb;color:white}.primary
 @media (max-width: 600px){
     .panel {
         left: 10px; right: 10px; top: auto; bottom: 10px;
-        width: auto; max-height: 48vh; 
+        width: auto; max-height: 46vh; 
         padding: 15px; border-radius: 20px;
         transform-origin: bottom left; 
     }
@@ -97,11 +150,34 @@ button:hover{background:#475569}.primary{background:#2563eb;color:white}.primary
     }
     
     .fab { top: auto; bottom: 20px; left: 20px; } 
+    .ai-fab { top: 16px; right: 60px; width: 42px; height: 42px; font-size: 13px; }
+    .ai-panel {
+        top: 64px; left: 10px; right: 10px; width: auto; max-height: 32vh;
+        padding: 12px; border-radius: 16px; overflow:hidden;
+        display:flex; flex-direction:column;
+    }
+    .ai-panel.has-result { max-height: 30vh; }
+    .ai-panel-header { margin-bottom: 8px; }
+    .ai-title { font-size: 16px; }
+    .ai-sub { font-size: 10px; }
+    .ai-panel.has-result .ai-sub { display:none; }
+    .ai-close-btn { width: 28px; height: 28px; }
     
     .title { font-size: 18px; margin-bottom: 2px; }
     .sub { font-size: 10px; margin-bottom: 10px; }
     .row { gap: 6px; margin: 6px 0; }
     input, select, button { font-size: 11px; padding: 6px 8px; }
+    .ai-console { min-height:0; overflow:hidden; display:flex; flex-direction:column; padding:10px; }
+    .ai-console textarea { font-size: 12px; min-height: 62px; max-height: 62px; line-height:1.35; }
+    .ai-panel.has-result .ai-console textarea { min-height: 44px; max-height:44px; }
+    .ai-row { margin: 6px 0 4px; }
+    .ai-status { font-size: 11px; margin-top: 2px; }
+    .ai-result { min-height:0; overflow:auto; max-height: 12vh; padding-top:7px; margin-top:7px; -webkit-overflow-scrolling:touch; }
+    .ai-answer { font-size: 12px; line-height: 1.5; padding:8px 10px; }
+    .ai-subtitle { margin-top:8px; margin-bottom:5px; font-size:10px; }
+    .ai-risk-card { padding: 8px; }
+    .ai-knowledge-item { padding:7px 8px; }
+    .ai-footnote,.ai-loading,.ai-empty,.ai-error { font-size: 11px; margin-top:7px; }
     .section { margin-top: 14px; margin-bottom: 8px; font-size: 10px; }
     
     .zoomBtns { right: 12px; top: 16px; bottom: auto; }

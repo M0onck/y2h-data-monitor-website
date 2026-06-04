@@ -4,13 +4,15 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import APIKeyCookie
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Any, Dict
 import sqlite3
 import math
 import os
 import uvicorn
-from datetime import datetime
-from typing import Optional, List, Any
+import json
+import urllib.error
+import urllib.request
+from datetime import datetime, timedelta
 
 app = FastAPI(title="Y2H Cloud Scientific Dashboard")
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -124,6 +126,11 @@ class StationLocationUpdate(BaseModel):
     latitude: float
     longitude: float
 
+class AiQuery(BaseModel):
+    question: str
+    hours: Optional[float] = 2.0
+    use_llm: bool = True
+
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -196,7 +203,469 @@ def init_db():
 init_db()
 
 # ==========================================
-# 3. 路由 API
+# 3. AI/RAG 风险研判助手
+# ==========================================
+RAG_KNOWLEDGE_BASE = [
+    {
+        "id": "traffic_pm_control",
+        "title": "交通源颗粒物与道路扬尘管控",
+        "keywords": ["pm25", "pm2.5", "pm10", "颗粒物", "扬尘", "车流", "重型车", "hdv", "怠速", "拥堵"],
+        "content": "道路颗粒物风险通常与车流密度、重型车比例、怠速排队、路面积尘和低风速扩散条件有关。短时管理可优先采取交通疏导、减少路边停靠怠速、湿扫保洁、重点路段临时巡查和重复走航复测。"
+    },
+    {
+        "id": "mobile_station_alignment",
+        "title": "走航-定点协同时空对齐",
+        "keywords": ["走航", "固定点", "定点", "校准", "对齐", "gps", "滞后", "漂移", "时间"],
+        "content": "走航数据适合发现空间差异，固定点数据适合提供连续基准。经过固定点附近的走航数据可用于估计传感器响应滞后和 GPS 漂移，建议把对齐结果作为风险可信度说明，而不是只看单次峰值。"
+    },
+    {
+        "id": "heat_exposure",
+        "title": "热暴露与户外活动风险",
+        "keywords": ["热", "高温", "温度", "湿度", "暴露", "户外", "骑行", "外卖"],
+        "content": "热风险与温度、湿度、太阳辐射、风速和暴露时间共同相关。短时建议包括避开高温时段、增加阴凉休息点、补水提醒、减少连续骑行暴露，并结合地表温度和人流活动强度判断重点区域。"
+    },
+    {
+        "id": "co2_voc_warning",
+        "title": "CO2/VOC 异常与通风排查",
+        "keywords": ["co2", "二氧化碳", "voc", "异味", "通风", "室内", "地下", "封闭"],
+        "content": "CO2 和 VOC 的短时异常常用于提示通风不足、局部排放或人员聚集。建议先核查传感器状态和通风条件，再结合固定点或复测数据确认是否需要调整通风、限流或排查局部污染源。"
+    },
+    {
+        "id": "decision_language",
+        "title": "辅助决策输出原则",
+        "keywords": ["政策", "建议", "管理", "怎么办", "措施", "治理", "处置"],
+        "content": "竞赛和管理场景中，AI 输出应定位为辅助决策建议。建议明确证据、风险等级、优先级、短期处置、中期优化和不确定性，不应把模型回答表述为执法结论或最终政策。"
+    }
+]
+
+METRIC_LABELS = {
+    "pm25": "PM2.5",
+    "pm10": "PM10",
+    "co2": "CO2",
+    "voc": "VOC",
+    "temp": "温度",
+    "rh": "湿度",
+    "wind_speed": "风速",
+    "veh_count": "车辆数",
+    "hdv_count": "重型车",
+    "ldv_count": "轻型车",
+    "ground_temp": "路面温度"
+}
+
+def safe_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        if math.isnan(float(value)):
+            return None
+        return float(value)
+    text = str(value).strip()
+    if not text or text in {"-", "--", "None", "null", "NaN", "nan"}:
+        return None
+    try:
+        return float(text.replace("℃", "").replace("%", "").strip())
+    except ValueError:
+        return None
+
+def parse_time(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(value))
+        except (OSError, ValueError):
+            return None
+    text = str(value).strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y/%m/%d %H:%M:%S"):
+        try:
+            return datetime.strptime(text[:19], fmt)
+        except ValueError:
+            continue
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return parsed.replace(tzinfo=None)
+    except ValueError:
+        return None
+
+def metric_avg(values: List[float]) -> Optional[float]:
+    clean = [v for v in values if v is not None]
+    if not clean:
+        return None
+    return sum(clean) / len(clean)
+
+def metric_stats(values: List[float]) -> Dict[str, Any]:
+    clean = [v for v in values if v is not None]
+    if not clean:
+        return {"count": 0, "avg": None, "max": None}
+    return {
+        "count": len(clean),
+        "avg": round(sum(clean) / len(clean), 2),
+        "max": round(max(clean), 2)
+    }
+
+def get_or_create_cell(cells: Dict[str, Dict[str, Any]], key: str, lat: float, lon: float, source: str, device_id: str) -> Dict[str, Any]:
+    if key not in cells:
+        bd_lon, bd_lat = wgs84_to_bd09(lon, lat)
+        cells[key] = {
+            "cell_id": key,
+            "lat_values": [],
+            "lon_values": [],
+            "bd_lng": round(bd_lon, 7),
+            "bd_lat": round(bd_lat, 7),
+            "sources": set(),
+            "devices": set(),
+            "metrics": {name: [] for name in METRIC_LABELS.keys()},
+            "sample_count": 0
+        }
+    cell = cells[key]
+    cell["lat_values"].append(lat)
+    cell["lon_values"].append(lon)
+    cell["sources"].add(source)
+    if device_id:
+        cell["devices"].add(device_id)
+    cell["sample_count"] += 1
+    return cell
+
+def add_metric(cell: Dict[str, Any], metric: str, value: Any):
+    parsed = safe_float(value)
+    if parsed is not None and metric in cell["metrics"]:
+        cell["metrics"][metric].append(parsed)
+
+def score_from_avg(stats: Dict[str, Any], metric: str, baseline: float, max_points: float) -> float:
+    avg = stats.get(metric, {}).get("avg")
+    if avg is None:
+        return 0.0
+    return min(max_points, max(0.0, avg / baseline * max_points))
+
+def compute_risk(stats: Dict[str, Dict[str, Any]]) -> tuple:
+    score = 0.0
+    reasons = []
+
+    pm25_score = score_from_avg(stats, "pm25", 75.0, 30.0)
+    if pm25_score:
+        score += pm25_score
+        reasons.append(f"PM2.5均值 {stats['pm25']['avg']}，峰值 {stats['pm25']['max']}")
+
+    pm10_score = score_from_avg(stats, "pm10", 150.0, 22.0)
+    if pm10_score:
+        score += pm10_score
+        reasons.append(f"PM10均值 {stats['pm10']['avg']}，峰值 {stats['pm10']['max']}")
+
+    co2_avg = stats.get("co2", {}).get("avg")
+    if co2_avg is not None and co2_avg > 800:
+        co2_score = min(12.0, (co2_avg - 800.0) / 800.0 * 12.0)
+        score += co2_score
+        reasons.append(f"CO2均值 {co2_avg}，提示通风或聚集风险")
+
+    voc_avg = stats.get("voc", {}).get("avg")
+    if voc_avg is not None and voc_avg > 0:
+        voc_score = min(8.0, voc_avg / max(1.0, abs(voc_avg)) * 4.0)
+        score += voc_score
+        reasons.append(f"VOC存在有效读数，均值 {voc_avg}")
+
+    temp_avg = stats.get("temp", {}).get("avg")
+    rh_avg = stats.get("rh", {}).get("avg")
+    if temp_avg is not None:
+        heat_score = 0.0
+        if temp_avg >= 35:
+            heat_score = 12.0
+        elif temp_avg >= 32:
+            heat_score = 8.0
+        elif temp_avg >= 30:
+            heat_score = 5.0
+        if rh_avg is not None and rh_avg >= 70:
+            heat_score += 3.0
+        if heat_score:
+            score += min(15.0, heat_score)
+            reasons.append(f"温湿暴露偏高：温度 {temp_avg}℃，湿度 {rh_avg if rh_avg is not None else '-'}%")
+
+    veh_avg = stats.get("veh_count", {}).get("avg")
+    hdv_avg = stats.get("hdv_count", {}).get("avg")
+    if veh_avg is not None and veh_avg > 0:
+        hdv_part = (hdv_avg or 0.0) * 2.5
+        traffic_score = min(13.0, (veh_avg + hdv_part) / 40.0 * 13.0)
+        score += traffic_score
+        reasons.append(f"边缘视觉显示车辆活动：车辆均值 {veh_avg}，重型车均值 {hdv_avg if hdv_avg is not None else 0}")
+
+    return round(min(100.0, score), 1), reasons
+
+def risk_level(score: float) -> str:
+    if score >= 75:
+        return "高风险"
+    if score >= 50:
+        return "中高风险"
+    if score >= 25:
+        return "关注"
+    return "低风险"
+
+def latest_station_locations(conn: sqlite3.Connection) -> Dict[str, tuple]:
+    c = conn.cursor()
+    c.execute('''
+        SELECT s.device_id, s.latitude, s.longitude
+        FROM stationary_data s
+        INNER JOIN (
+            SELECT device_id, MAX(timestamp) AS max_time
+            FROM stationary_data
+            WHERE device_id IS NOT NULL
+            GROUP BY device_id
+        ) latest ON s.device_id = latest.device_id AND s.timestamp = latest.max_time
+    ''')
+    locations = {}
+    for row in c.fetchall():
+        lat = safe_float(row["latitude"])
+        lon = safe_float(row["longitude"])
+        if lat is not None and lon is not None:
+            locations[row["device_id"]] = (lat, lon)
+    return locations
+
+def collect_recent_risk_cells(hours: float) -> tuple:
+    start_dt = datetime.now() - timedelta(hours=hours)
+    start_text = start_dt.strftime("%Y-%m-%d %H:%M:%S")
+    start_ts = start_dt.timestamp()
+    cells: Dict[str, Dict[str, Any]] = {}
+    counters = {"mobile_rows": 0, "stationary_rows": 0, "edge_rows": 0, "valid_cells": 0}
+
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+
+    c.execute('''
+        SELECT * FROM mobile_data
+        WHERE timestamp >= ?
+        ORDER BY timestamp DESC
+        LIMIT 20000
+    ''', (start_text,))
+    for row in c.fetchall():
+        counters["mobile_rows"] += 1
+        lat = safe_float(row["latitude"])
+        lon = safe_float(row["longitude"])
+        if lat is None or lon is None:
+            continue
+        if abs(lat - 32.060255) < 0.00001 and abs(lon - 118.796877) < 0.00001:
+            continue
+        cell = get_or_create_cell(cells, spatial_cell_id(lat, lon), lat, lon, "走航", row["device_id"])
+        for metric in ("pm25", "pm10", "temp", "rh", "voc", "co2"):
+            add_metric(cell, metric, row[metric])
+
+    c.execute('''
+        SELECT * FROM stationary_data
+        WHERE timestamp >= ?
+        ORDER BY timestamp DESC
+        LIMIT 10000
+    ''', (start_text,))
+    for row in c.fetchall():
+        counters["stationary_rows"] += 1
+        lat = safe_float(row["latitude"])
+        lon = safe_float(row["longitude"])
+        if lat is None or lon is None:
+            continue
+        cell = get_or_create_cell(cells, spatial_cell_id(lat, lon), lat, lon, "定点", row["device_id"])
+        for metric in ("pm25", "pm10", "temp", "rh", "wind_speed"):
+            add_metric(cell, metric, row[metric])
+
+    station_locations = latest_station_locations(conn)
+    c.execute('''
+        SELECT * FROM edge_snapshots
+        WHERE timestamp >= ?
+        ORDER BY timestamp DESC
+        LIMIT 10000
+    ''', (start_ts,))
+    for row in c.fetchall():
+        counters["edge_rows"] += 1
+        device_id = row["device_id"]
+        if device_id not in station_locations:
+            continue
+        lat, lon = station_locations[device_id]
+        cell = get_or_create_cell(cells, spatial_cell_id(lat, lon), lat, lon, "边缘视觉", device_id)
+        metric_map = {
+            "pm25": "pm25",
+            "pm10": "pm10",
+            "temp": "temp",
+            "humidity": "rh",
+            "wind_speed": "wind_speed",
+            "veh_count": "veh_count",
+            "hdv_count": "hdv_count",
+            "ldv_count": "ldv_count",
+            "ground_temp": "ground_temp"
+        }
+        for src_key, metric in metric_map.items():
+            add_metric(cell, metric, row[src_key])
+
+    conn.close()
+
+    cards = []
+    for cell in cells.values():
+        stats = {metric: metric_stats(values) for metric, values in cell["metrics"].items()}
+        measured_count = sum(stat.get("count", 0) for stat in stats.values())
+        if measured_count == 0:
+            continue
+        score, reasons = compute_risk(stats)
+        lat = metric_avg(cell["lat_values"])
+        lon = metric_avg(cell["lon_values"])
+        if lat is not None and lon is not None:
+            bd_lon, bd_lat = wgs84_to_bd09(lon, lat)
+        else:
+            bd_lon, bd_lat = cell["bd_lng"], cell["bd_lat"]
+        cards.append({
+            "cell_id": cell["cell_id"],
+            "risk_score": score,
+            "risk_level": risk_level(score),
+            "sample_count": cell["sample_count"],
+            "sources": sorted(cell["sources"]),
+            "devices": sorted(cell["devices"]),
+            "wgs_lat": round(lat, 7) if lat is not None else None,
+            "wgs_lon": round(lon, 7) if lon is not None else None,
+            "bd_lat": round(bd_lat, 7) if bd_lat is not None else None,
+            "bd_lng": round(bd_lon, 7) if bd_lon is not None else None,
+            "stats": stats,
+            "evidence": reasons[:5]
+        })
+
+    cards.sort(key=lambda item: item["risk_score"], reverse=True)
+    counters["valid_cells"] = len(cards)
+    return cards, counters
+
+def retrieve_knowledge(question: str, top_cards: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    context = question.lower()
+    for card in top_cards[:3]:
+        context += " " + " ".join(card.get("evidence", [])).lower()
+        context += " " + " ".join(card.get("sources", [])).lower()
+
+    ranked = []
+    for item in RAG_KNOWLEDGE_BASE:
+        score = 0
+        for keyword in item["keywords"]:
+            if keyword.lower() in context:
+                score += 2
+        if score == 0 and ("建议" in question or "怎么办" in question):
+            score = 1 if item["id"] == "decision_language" else 0
+        ranked.append((score, item))
+    ranked.sort(key=lambda pair: pair[0], reverse=True)
+    return [item for score, item in ranked if score > 0][:3] or RAG_KNOWLEDGE_BASE[:3]
+
+def format_stat(stats: Dict[str, Dict[str, Any]], metric: str, unit: str = "") -> Optional[str]:
+    stat = stats.get(metric, {})
+    if stat.get("count", 0) == 0:
+        return None
+    label = METRIC_LABELS.get(metric, metric)
+    return f"{label}均值{stat['avg']}{unit}、峰值{stat['max']}{unit}"
+
+def build_policy_suggestions(top_card: Optional[Dict[str, Any]]) -> List[str]:
+    if not top_card:
+        return ["先确认设备在线状态和采样时间窗，再进行实地复测。"]
+    stats = top_card["stats"]
+    suggestions = []
+    pm25 = stats.get("pm25", {}).get("avg")
+    pm10 = stats.get("pm10", {}).get("avg")
+    veh = stats.get("veh_count", {}).get("avg")
+    hdv = stats.get("hdv_count", {}).get("avg")
+    temp = stats.get("temp", {}).get("avg")
+    rh = stats.get("rh", {}).get("avg")
+    co2 = stats.get("co2", {}).get("avg")
+    voc = stats.get("voc", {}).get("avg")
+
+    if pm25 or pm10 or veh:
+        suggestions.append("短期优先对该路段进行交通疏导、减少路边停靠怠速，并安排一次高峰期重复走航复测。")
+    if pm10 and pm10 >= 100:
+        suggestions.append("若现场存在扬尘或路面积尘，建议增加湿扫保洁频次，并记录保洁前后的 PM10 变化。")
+    if veh and (hdv or 0) > 0:
+        suggestions.append("若重型车或高排放车辆集中，建议把边缘视觉截图与颗粒物峰值对齐，形成交通源证据链。")
+    if temp and temp >= 30:
+        suggestions.append("对外卖骑手、学生步行通道等暴露人群，建议增加遮阴、补水提醒和错峰通行提示。")
+    if co2 and co2 > 1000:
+        suggestions.append("CO2 偏高时先排查通风条件和局部人员聚集，再判断是否需要限流或强化通风。")
+    if voc and voc > 0:
+        suggestions.append("VOC 有效读数需要结合风向、异味巡查和复测确认，避免把单点瞬时值直接作为污染源结论。")
+    if rh and rh >= 70 and temp and temp >= 30:
+        suggestions.append("高温高湿叠加时，应把热暴露风险与颗粒物风险分开标注，便于现场管理分级处置。")
+    suggestions.append("所有建议应作为辅助研判结果，最终处置需结合现场巡查和人工复核。")
+    return suggestions[:5]
+
+def build_local_ai_answer(question: str, hours: float, cards: List[Dict[str, Any]], knowledge: List[Dict[str, str]], counters: Dict[str, int]) -> str:
+    if not cards:
+        return (
+            f"结论：近 {hours:g} 小时内没有足够的有效空间数据用于风险排序。\n"
+            f"数据检查：走航 {counters['mobile_rows']} 条、定点 {counters['stationary_rows']} 条、边缘快照 {counters['edge_rows']} 条，但缺少可用坐标或有效污染物读数。\n"
+            "建议：先确认设备在线、GPS 定位和固定站坐标，再进行一次覆盖重点路段的走航采样。"
+        )
+
+    top = cards[0]
+    location = f"网格 {top['cell_id']}"
+    if top.get("bd_lng") and top.get("bd_lat"):
+        location += f"（百度坐标约 {top['bd_lng']}, {top['bd_lat']}）"
+
+    evidence_parts = []
+    for metric, unit in [("pm25", " μg/m³"), ("pm10", " μg/m³"), ("co2", " ppm"), ("voc", ""), ("temp", "℃"), ("rh", "%"), ("veh_count", ""), ("hdv_count", "")]:
+        text = format_stat(top["stats"], metric, unit)
+        if text:
+            evidence_parts.append(text)
+
+    lines = [
+        f"结论：近 {hours:g} 小时内，{location} 的综合风险最高，风险分 {top['risk_score']}/100，等级为{top['risk_level']}。",
+        f"证据：该区域来自{'、'.join(top['sources'])}数据，样本数 {top['sample_count']}，设备 {', '.join(top['devices']) or '未知'}。"
+    ]
+    if evidence_parts:
+        lines.append("关键指标：" + "；".join(evidence_parts[:6]) + "。")
+    if top["evidence"]:
+        lines.append("风险解释：" + "；".join(top["evidence"]) + "。")
+
+    suggestions = build_policy_suggestions(top)
+    lines.append("建议措施：")
+    for idx, suggestion in enumerate(suggestions, start=1):
+        lines.append(f"{idx}. {suggestion}")
+
+    if knowledge:
+        lines.append("检索依据：" + "；".join([f"{item['title']}" for item in knowledge]) + "。")
+    lines.append("不确定性：当前结果用于竞赛演示和辅助研判，短时峰值需要结合传感器校准、GPS 漂移、风向风速和现场巡查复核。")
+    return "\n".join(lines)
+
+def call_optional_llm(question: str, hours: float, cards: List[Dict[str, Any]], knowledge: List[Dict[str, str]], fallback_answer: str) -> Optional[str]:
+    api_url = os.getenv("Y2H_LLM_API_URL", "").strip()
+    api_key = os.getenv("Y2H_LLM_API_KEY", "").strip()
+    model = os.getenv("Y2H_LLM_MODEL", "").strip()
+    if not api_url or not api_key or not model:
+        return None
+
+    payload = {
+        "model": model,
+        "temperature": 0.2,
+        "max_tokens": int(os.getenv("Y2H_LLM_MAX_TOKENS", "900")),
+        "messages": [
+            {
+                "role": "system",
+                "content": "你是城市道路微环境风险研判助手。只能基于输入的数据证据和知识库摘要回答，输出中文，给出结论、证据、建议和不确定性，不得编造不存在的数据。"
+            },
+            {
+                "role": "user",
+                "content": json.dumps({
+                    "question": question,
+                    "time_window_hours": hours,
+                    "top_risk_cells": cards[:5],
+                    "retrieved_knowledge": knowledge,
+                    "fallback_answer": fallback_answer
+                }, ensure_ascii=False)
+            }
+        ]
+    }
+    request = urllib.request.Request(
+        api_url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}"
+        },
+        method="POST"
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=float(os.getenv("Y2H_LLM_TIMEOUT", "60"))) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        return result["choices"][0]["message"]["content"].strip()
+    except (urllib.error.URLError, KeyError, IndexError, json.JSONDecodeError, TimeoutError) as exc:
+        print(f"[Y2H-RAG] LLM call failed, fallback to local answer: {exc}")
+        return None
+
+# ==========================================
+# 4. 路由 API
 # ==========================================
 cookie_scheme = APIKeyCookie(name="y2h_cloud_session", auto_error=False)
 
@@ -415,6 +884,32 @@ def get_map_data(date: str = "", start: str = "", end: str = "", device_id: str 
         points.append(pt)
         
     return {"ok": True, "dates": sorted(list(dates_set)), "returned_count": len(points), "points": points}
+
+@app.post("/api/ai/query")
+def query_ai_advisor(data: AiQuery, auth: bool = Depends(check_login)):
+    question = (data.question or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="问题不能为空")
+
+    hours = data.hours if data.hours is not None else 2.0
+    hours = max(0.25, min(float(hours), 24.0))
+
+    cards, counters = collect_recent_risk_cells(hours)
+    knowledge = retrieve_knowledge(question, cards)
+    local_answer = build_local_ai_answer(question, hours, cards, knowledge, counters)
+    llm_answer = call_optional_llm(question, hours, cards, knowledge, local_answer) if data.use_llm else None
+
+    return {
+        "ok": True,
+        "mode": "llm-rag" if llm_answer else "local-rag",
+        "question": question,
+        "hours": hours,
+        "answer": llm_answer or local_answer,
+        "risk_cards": cards[:5],
+        "knowledge": [{"id": item["id"], "title": item["title"], "content": item["content"]} for item in knowledge],
+        "data_counters": counters,
+        "llm_enabled": bool(os.getenv("Y2H_LLM_API_URL") and os.getenv("Y2H_LLM_API_KEY") and os.getenv("Y2H_LLM_MODEL"))
+    }
 
 @app.post("/api/stationary/location")
 def update_station_location(data: StationLocationUpdate, auth: bool = Depends(check_login)):

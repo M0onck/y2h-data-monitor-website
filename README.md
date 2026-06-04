@@ -10,6 +10,54 @@
 * **项目路径**：`/home/ubuntu/project/data-monitor/`
 * **配置文件路径**：`/etc/systemd/system/y2h-cloud.service`
 
+## 1.1 Y2H-RAG 智能研判模块
+
+系统已内置 `/api/ai/query` 接口。默认情况下，即使没有大模型 API Key，也会使用近实时走航、定点和边缘快照数据进行本地风险计算，并结合内置治理知识库生成“哪里风险最高、为什么、怎么办”的证据约束回答。
+
+如果需要接入外部大语言模型，请在服务启动环境中配置以下变量：
+
+```bash
+export Y2H_LLM_API_URL="https://你的模型服务/v1/chat/completions"
+export Y2H_LLM_API_KEY="你的API_KEY"
+export Y2H_LLM_MODEL="你的模型名称"
+```
+
+当前已用 `Qwen/Qwen2.5-7B-Instruct` 和 `Qwen/Qwen2.5-14B-Instruct` 测通过硅基流动 OpenAI 兼容接口。7B 更便宜，14B 的中文研判稳定性更好，演示建议优先使用 14B。正式部署到 systemd 时，可以在 `[Service]` 段加入占位配置：
+
+```ini
+Environment="Y2H_LLM_API_URL=https://api.siliconflow.cn/v1/chat/completions"
+Environment="Y2H_LLM_API_KEY=替换为你的API_KEY"
+Environment="Y2H_LLM_MODEL=Qwen/Qwen2.5-14B-Instruct"
+Environment="Y2H_LLM_TIMEOUT=60"
+Environment="Y2H_LLM_MAX_TOKENS=900"
+```
+
+不要把真实 API Key 提交到公开仓库。
+
+未配置上述变量时，前端仍可正常使用本地 RAG 研判结果。
+
+### 模拟数据测试
+
+如果暂时没有真实设备上传数据，可在项目目录运行：
+
+```bash
+python tools/seed_ai_demo_data.py
+```
+
+脚本会写入 `DEMO_MOBILE_01` 和 `DEMO_STATION_01` 两个演示设备的近 2 小时数据，包括走航污染物、固定站数据和边缘视觉快照。然后在网页 AI 窗口提问：
+
+```text
+根据过去2小时的数据，哪里环境风险最高？应该怎么办？
+```
+
+AI 应能识别出一个高风险网格，并给出 PM、CO2、车辆活动、热风险等证据和治理建议。再次运行脚本会先替换旧的 `DEMO_*` 演示数据，不会删除真实设备数据。
+
+需要清理演示数据时运行：
+
+```bash
+python tools/seed_ai_demo_data.py --clear-only
+```
+
 ## 2. 配置文件备份
 
 如果需要在新服务器上重新部署，请使用 `sudo nano /etc/systemd/system/y2h-cloud.service` 创建文件，并填入以下内容：
