@@ -14,6 +14,10 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timedelta
 
+# 自动加载 .env 文件中的环境变量
+from dotenv import load_dotenv
+load_dotenv()
+
 app = FastAPI(title="Y2H Cloud Scientific Dashboard")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
