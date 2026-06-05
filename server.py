@@ -623,50 +623,117 @@ def build_local_ai_answer(question: str, hours: float, cards: List[Dict[str, Any
     lines.append("不确定性：当前结果用于竞赛演示和辅助研判，短时峰值需要结合传感器校准、GPS 漂移、风向风速和现场巡查复核。")
     return "\n".join(lines)
 
-def call_optional_llm(question: str, hours: float, cards: List[Dict[str, Any]], knowledge: List[Dict[str, str]], fallback_answer: str) -> Optional[str]:
+def execute_readonly_sql(sql: str) -> str:
+    """供大模型调用的工具函数：安全地执行只读 SQL 查询"""
+    # 1. 基础的防注入与防篡改拦截
+    forbidden_keywords = ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "REPLACE"]
+    if any(kw in sql.upper() for kw in forbidden_keywords):
+        return "Error: 权限拒绝。该工具只能执行 SELECT 语句获取数据。"
+        
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        # 2. SQLite 底层级别限制只读 (彻底杜绝大模型误删数据)
+        c.execute("PRAGMA query_only = ON;")
+        
+        c.execute(sql)
+        # 3. 限制最大返回行数，防止几十万条数据瞬间撑爆大模型的 Token 上限
+        rows = c.fetchmany(50) 
+        cols = [desc[0] for desc in c.description] if c.description else []
+        conn.close()
+        
+        if not rows:
+            return "查询成功，但未找到匹配的数据行。"
+            
+        # 4. 将查询结果拼装成紧凑的 JSON 字符串返回给大模型
+        res = [dict(zip(cols, row)) for row in rows]
+        return json.dumps(res, ensure_ascii=False)
+    except Exception as e:
+        return f"SQL执行失败，请检查语法: {str(e)}"
+
+def call_optional_llm(question: str, hours: float, cards: List[Dict[str, Any]], knowledge: List[Dict[str, str]], fallback_answer: str, counters: Dict[str, int] = None) -> Optional[str]:
     api_url = os.getenv("Y2H_LLM_API_URL", "").strip()
     api_key = os.getenv("Y2H_LLM_API_KEY", "").strip()
     model = os.getenv("Y2H_LLM_MODEL", "").strip()
     if not api_url or not api_key or not model:
         return None
+        
+    if counters is None: counters = {}
 
-    payload = {
-        "model": model,
-        "temperature": 0.2,
-        "max_tokens": int(os.getenv("Y2H_LLM_MAX_TOKENS", "900")),
-        "messages": [
-            {
-                "role": "system",
-                "content": "你是城市道路微环境风险研判助手。只能基于输入的数据证据和知识库摘要回答，输出中文，给出结论、证据、建议和不确定性，不得编造不存在的数据。"
-            },
-            {
-                "role": "user",
-                "content": json.dumps({
-                    "question": question,
-                    "time_window_hours": hours,
-                    "top_risk_cells": cards[:5],
-                    "retrieved_knowledge": knowledge,
-                    "fallback_answer": fallback_answer
-                }, ensure_ascii=False)
+    # 构造基础上下文
+    prompt_text = f"【用户问题】\n{question}\n\n"
+    prompt_text += f"【系统已为您预聚合的高风险网格摘要 (供宏观研判参考)】\n系统已扫描过去 {hours} 小时内的 {counters.get('mobile_rows', 0)+counters.get('stationary_rows', 0)} 条记录，提取出 {len(cards)} 个高风险网格。\n"
+    if cards:
+        for i, card in enumerate(cards[:3]):
+            prompt_text += f"- 网格 {card['cell_id']} (风险 {card['risk_score']}): 关键证据为 {'; '.join(card['evidence'])}\n"
+            
+    # 【核心】：向大模型注册我们刚才写的数据库查询工具
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": "query_sqlite_db",
+            "description": "【关键能力】当用户的提问涉及特定设备的具体数值（如CO2最低值、最高温）、原始数据检索，且上方的网格摘要无法回答时，必须调用此工具直接查询 SQLite 数据库。表结构：1. mobile_data(timestamp, pm25, pm10, latitude, longitude, speed, temp, rh, voc, co2, device_id); 2. stationary_data(timestamp, pm25, pm10, temp, rh, wind_speed, wind_dir, device_id); 3. edge_snapshots(timestamp, veh_count, ldv_count, hdv_count, device_id)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sql_query": {
+                        "type": "string", 
+                        "description": "合法的 SQLite SELECT 语句。示例：SELECT MIN(co2) FROM mobile_data WHERE device_id='EDGE_NODE_01' AND timestamp >= datetime('now', '-2 hours')"
+                    }
+                },
+                "required": ["sql_query"]
             }
-        ]
-    }
-    request = urllib.request.Request(
-        api_url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}"
-        },
-        method="POST"
-    )
+        }
+    }]
+
+    messages = [
+        {"role": "system", "content": "你是 Y2H 城市微环境风险研判专家。你可以基于提供的网格摘要回答宏观问题。如果遇到微观的具体数据查询请求，请主动使用 query_sqlite_db 工具执行 SQL 查库，并用查询到的事实数据回答用户。"},
+        {"role": "user", "content": prompt_text}
+    ]
+
+    def _post_api(msgs):
+        payload = {"model": model, "temperature": 0.2, "messages": msgs, "tools": tools, "tool_choice": "auto"}
+        req = urllib.request.Request(api_url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}, method="POST")
+        with urllib.request.urlopen(req, timeout=float(os.getenv("Y2H_LLM_TIMEOUT", "60"))) as response:
+            return json.loads(response.read().decode("utf-8"))
+
     try:
-        with urllib.request.urlopen(request, timeout=float(os.getenv("Y2H_LLM_TIMEOUT", "60"))) as response:
-            result = json.loads(response.read().decode("utf-8"))
-        return result["choices"][0]["message"]["content"].strip()
-    except (urllib.error.URLError, KeyError, IndexError, json.JSONDecodeError, TimeoutError) as exc:
-        print(f"[Y2H-RAG] LLM call failed, fallback to local answer: {exc}")
-        return None
+        # 第一轮对话：大模型决定是直接回答，还是调用查库工具
+        result = _post_api(messages)
+        response_msg = result["choices"][0]["message"]
+        
+        # 如果大模型决定调用工具 (生成了 SQL 语句)
+        if response_msg.get("tool_calls"):
+            messages.append(response_msg) # 把大模型的工具请求加入上下文
+            
+            for tool_call in response_msg["tool_calls"]:
+                if tool_call["function"]["name"] == "query_sqlite_db":
+                    # 解析大模型写出的 SQL 并执行本地函数
+                    args = json.loads(tool_call["function"]["arguments"])
+                    sql_query = args.get("sql_query", "")
+                    
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🤖 AI 触发自主查库: {sql_query}")
+                    db_result = execute_readonly_sql(sql_query)
+                    
+                    # 将查库结果喂回给大模型
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call["id"],
+                        "name": tool_call["function"]["name"],
+                        "content": db_result
+                    })
+            
+            # 第二轮对话：大模型拿到数据库结果，整理出最终的自然语言回答
+            final_result = _post_api(messages)
+            return final_result["choices"][0]["message"]["content"].strip()
+            
+        else:
+            # 如果大模型认为无需查库（如宏观分析），直接返回结果
+            return response_msg["content"].strip()
+
+    except Exception as exc:
+        print(f"[Y2H-RAG] LLM 智能体调用异常: {exc}")
+        return fallback_answer
 
 # ==========================================
 # 4. 路由 API
@@ -914,7 +981,7 @@ def query_ai_advisor(data: AiQuery, auth: bool = Depends(check_login)):
     cards, counters = collect_recent_risk_cells(hours)
     knowledge = retrieve_knowledge(question, cards)
     local_answer = build_local_ai_answer(question, hours, cards, knowledge, counters)
-    llm_answer = call_optional_llm(question, hours, cards, knowledge, local_answer) if data.use_llm else None
+    llm_answer = call_optional_llm(question, hours, cards, knowledge, local_answer, counters) if data.use_llm else None
 
     return {
         "ok": True,
