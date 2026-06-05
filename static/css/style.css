@@ -123,16 +123,36 @@ button:hover { background: #475569; }
 #mobileDashboard, #stationaryDashboard { animation: fadeIn 0.3s ease-in-out; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
 
-/* ================= 手机端深度自适应优化 ================= */
+/* ================= 手机端深度自适应优化 (底栏交互设计) ================= */
 @media (max-width: 600px) {
-    .top-nav { top: 10px; left: 10px; right: 10px; gap: 6px; }
-    .nav-btn { padding: 8px 10px; font-size: 13px; flex: 1; text-align: center; }
-    
-    .panel, .ai-panel {
-        top: 64px; left: 10px; right: 10px; width: auto; 
-        max-height: calc(100vh - 80px); padding: 15px; border-radius: 16px;
+    /* 1. 导航栏吸底排版，并略微增大点击热区 */
+    .top-nav { 
+        top: auto; bottom: 20px; left: 12px; right: 12px; gap: 8px; 
+        z-index: 1100; /* 确保悬浮在最上层 */
+    }
+    .nav-btn { 
+        padding: 12px 6px; font-size: 13px; flex: 1; 
+        text-align: center; border-radius: 14px; 
     }
     
+    /* 2. 主面板与AI面板：移至底部，并为其留出导航栏的高度空间 */
+    .panel, .ai-panel {
+        top: auto; bottom: 84px; left: 12px; right: 12px; width: auto; 
+        max-height: calc(100vh - 110px); padding: 16px; border-radius: 20px;
+        transform-origin: bottom center; /* 动画基点设为底部 */
+    }
+    
+    /* 3. 覆盖桌面端的横向滑出动画，改为手机端专属的纵向 (自下而上) 弹出 */
+    .panel { transform: translateY(0); }
+    .panel.collapsed { transform: translateY(30px); }
+    .ai-panel { transform: translateY(30px); }
+    .ai-panel.open { transform: translateY(0); }
+    
+    /* 4. 地图缩放控件：由于底部已被占据，将其移至右上角防遮挡 */
+    .zoomBtns { right: 12px; top: 16px; bottom: auto; z-index: 1000; }
+    .zoomBtns button { width: 38px; height: 38px; font-size: 20px; border-radius: 10px; }
+    
+    /* === 以下为面板内部元素的精简排版，保持紧凑度以节省垂直空间 === */
     .ai-title { font-size: 16px; } .ai-sub { font-size: 10px; }
     .title { font-size: 18px; margin-bottom: 2px; }
     .sub { font-size: 10px; margin-bottom: 10px; }
@@ -152,10 +172,6 @@ button:hover { background: #475569; }
     .ai-footnote, .ai-loading, .ai-empty, .ai-error { font-size: 11px; margin-top: 7px; }
     
     .section { margin-top: 14px; margin-bottom: 8px; font-size: 10px; }
-    
-    .zoomBtns { right: 12px; bottom: 20px; top: auto; }
-    .zoomBtns button { width: 38px; height: 38px; font-size: 20px; border-radius: 10px; }
-    
     .live-metrics { gap: 6px; margin: 8px 0; }
     .metric-card { padding: 8px 4px; border-radius: 10px; }
     .metric-val { font-size: 13px; margin-top: 4px; }
