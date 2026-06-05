@@ -20,18 +20,14 @@
     <button onclick="map.zoomOut()">－</button>
 </div>
 
-<!-- 最小化后的悬浮恢复按钮 (默认隐藏) -->
-<div id="fab" class="fab" onclick="togglePanel()" title="展开面板">🎛️</div>
-
-<!-- 独立 AI 研判助手入口 -->
-<button id="aiFab" class="ai-fab active" onclick="toggleAiAdvisor()" title="打开/关闭 AI 研判助手">AI</button>
+<div class="top-nav">
+    <button id="nav-dashboard" class="nav-btn active" onclick="switchTab('dashboard')">数据概览</button>
+    <button id="nav-ai" class="nav-btn" onclick="switchTab('ai')">智能研判</button>
+    <a href="/logout" class="nav-btn logout">退出系统</a>
+</div>
 
 <!-- 主控制面板 -->
 <div class="panel" id="mainPanel">
-    
-    <!-- 统一的右上角圆形控制按钮 -->
-    <button class="top-action-btn min-btn" onclick="togglePanel()" title="最小化面板">-</button>
-    <a href="/logout" class="top-action-btn logout-btn" title="安全退出">×</a>
 
     <div class="title">Y2H 环境感知云终端</div>
     <div class="sub">走航-定点多模态监测归集平台</div>
@@ -129,13 +125,12 @@
 </div>
 
 <!-- Y2H-RAG：独立智能研判窗口 -->
-<aside id="aiPanel" class="ai-panel open" aria-label="Y2H-RAG 智能研判助手">
+<aside id="aiPanel" class="ai-panel" aria-label="Y2H-RAG 智能研判助手">
     <div class="ai-panel-header">
         <div>
             <div class="ai-title">Y2H-RAG 智能研判</div>
             <div class="ai-sub">近实时数据 · 证据约束 · 管理建议</div>
         </div>
-        <button class="ai-close-btn" onclick="toggleAiAdvisor()" title="关闭">×</button>
     </div>
     <div class="ai-console">
         <textarea id="aiQuestion" rows="3">根据过去2小时的数据，哪里环境风险最高？应该怎么办？请给出政策建议。</textarea>
@@ -154,6 +149,6 @@
     </div>
 </aside>
 
-<script src="/static/js/app.js?v=1.5"></script>
+<script src="/static/js/app.js?v=1.6"></script>
 </body>
 </html>

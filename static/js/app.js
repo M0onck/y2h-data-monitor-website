@@ -12,22 +12,44 @@ let aiOverlays = [];
 // 状态机变量
 let currentDeviceId = null; 
 let currentDeviceType = null; 
-let isPanelCollapsed = false; // 控制面板是否折叠的状态标志
-let isAiPanelOpen = true;
+let activeTab = 'dashboard'; // 可选值：'dashboard', 'ai', 或 null
 const REFRESH_INTERVAL = 5000;
 
-// ======================== 面板折叠展开机制 ========================
-function togglePanel() {
-    isPanelCollapsed = !isPanelCollapsed;
-    const panel = document.getElementById('mainPanel');
-    const fab = document.getElementById('fab');
-    
-    if (isPanelCollapsed) {
-        panel.classList.add('collapsed');
-        fab.classList.add('visible');
+// ======================== 面板页签切换互斥机制 ========================
+function switchTab(tabName) {
+    // 如果点击的是当前已激活的页签，则收起所有面板
+    if (activeTab === tabName) {
+        activeTab = null;
     } else {
+        activeTab = tabName;
+    }
+    renderTabs();
+}
+
+function renderTabs() {
+    const panel = document.getElementById('mainPanel');
+    const aiPanel = document.getElementById('aiPanel');
+    const navDash = document.getElementById('nav-dashboard');
+    const navAi = document.getElementById('nav-ai');
+
+    if (!panel || !aiPanel) return;
+
+    // 控制数据看板
+    if (activeTab === 'dashboard') {
         panel.classList.remove('collapsed');
-        fab.classList.remove('visible');
+        navDash.classList.add('active');
+    } else {
+        panel.classList.add('collapsed');
+        navDash.classList.remove('active');
+    }
+
+    // 控制 AI 研判面板
+    if (activeTab === 'ai') {
+        aiPanel.classList.add('open');
+        navAi.classList.add('active');
+    } else {
+        aiPanel.classList.remove('open');
+        navAi.classList.remove('active');
     }
 }
 
@@ -46,22 +68,6 @@ function escapeHtml(text) {
 function clearAiOverlays() {
     aiOverlays.forEach(o => map.removeOverlay(o));
     aiOverlays = [];
-}
-
-function toggleAiAdvisor(forceOpen) {
-    if (typeof forceOpen === 'boolean') {
-        isAiPanelOpen = forceOpen;
-    } else {
-        isAiPanelOpen = !isAiPanelOpen;
-    }
-
-    const panel = document.getElementById('aiPanel');
-    const fab = document.getElementById('aiFab');
-    if (!panel || !fab) return;
-
-    panel.classList.toggle('open', isAiPanelOpen);
-    fab.classList.toggle('active', isAiPanelOpen);
-    fab.setAttribute('aria-expanded', String(isAiPanelOpen));
 }
 
 function colorRamp(t) {
@@ -678,4 +684,5 @@ async function fetchAndRenderEdgeSnapshot(deviceId) {
     }
 }
 
+renderTabs(); // 初始化渲染页签状态
 init();
